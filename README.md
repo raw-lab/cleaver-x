@@ -267,7 +267,7 @@ cleaver help split       # detailed help for one command (same as: cleaver split
 ```
 
 ---
-
+---
 ## 🧩 How it works
 
 ```mermaid 
