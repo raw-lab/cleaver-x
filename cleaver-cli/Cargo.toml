@@ -1,0 +1,30 @@
+[package]
+name = "cleaver-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Cleaver CLI: parallel record-aware splitter & converter for FASTA/FASTQ/SAM/BAM."
+
+[[bin]]
+name = "cleaver"
+path = "src/main.rs"
+
+[dependencies]
+cleaver-core = { path = "../cleaver-core", features = ["gzip"] }
+anyhow = "1"
+clap = { version = "=4.4.18", features = ["derive"] }
+rayon = "=1.10.0"
+rayon-core = "=1.12.1"            # MSRV pin: rayon-core 1.13 needs rustc 1.80
+serde = { version = "1", features = ["derive"] }
+# Distributed backend (vendored HydraMPP); enabled by --features hydra.
+hydra-mpp-core = { path = "../vendor/hydra-mpp-core", optional = true }
+# GPU kernel (NVIDIA) for `stats`; enabled by --features gpu. Needs the CUDA
+# toolkit at build time, so it is OFF by default and built on GPU hosts.
+cudarc = { version = "0.12", default-features = false, features = ["std", "driver", "nvrtc"], optional = true }
+
+[features]
+default = []
+hydra = ["dep:hydra-mpp-core"]   # cross-node / multi-core scaling via HydraMPP
+gpu   = ["dep:cudarc"]           # GPU base-composition kernel (CUDA toolchain)
