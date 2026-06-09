@@ -407,34 +407,6 @@ single core: **1.52 s at 4.6 MB RSS** (~115 M bases/s), memory flat. The GPU
 kernel (`--features gpu`) targets this same reduction on CUDA hardware.
 
 ---
-
-## 🐞 Bug audit ("find any bugs")
-
-Found and fixed while building this:
-
-1. **Duplicate `noodles-sam` in the dependency tree** — pinning `noodles-sam 0.50`
-   while `noodles-bam 0.55` requires `0.52` put *two* copies of the crate in the
-   graph, so `alignment::io::Write` and `RecordBuf: Record` came from different
-   crates and didn't match (`finish`/`write_alignment_record` "not satisfied").
-   Fixed by aligning to `0.52`.
-2. **Silent MSRV walls** — `indexmap 2.14` and `rayon-core 1.13` require
-   edition2024 / rustc ≥ 1.80. Pinned to `2.2.6` and `1.12.1`.
-3. **Wrong unit-test expectation in the base counter** — the FASTA `stats` test
-   asserted `C:4 / total:15 / GC:7÷13` for input `ACGT|AACC|GGTTNN`, which
-   actually has `C:3 / total:14 / GC:0.5`; the kernel was right, the test was
-   miscounted. Corrected the expectation (caught by running the suite, not by
-   eye).
-
-Verified correct, no bug: the FASTA engine is byte-identical to the Python
-original; BAM chunks re-read as valid BAM with record counts summing exactly
-(50k and 300k runs); SAM chunks each carry the header.
-
-Honest sharp edges: a wrong/never-matching delimiter yields one giant chunk
-(mitigated by the start-of-line default); memory scales with the longest *line*,
-not the file; `--contains` is an O(n·m) scan; and two inputs sharing a stem
-(e.g. `x.ffn` and `x.ffn.gz`) write the same chunk names into one `-o` dir —
-split same-stem inputs separately.
-
 ---
 
 ## 🔧 Build
