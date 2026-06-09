@@ -1,0 +1,32 @@
+[package]
+name = "cleaver-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Record-aware engine: streaming FASTA/FASTQ chunking + SAM/BAM split & conversion."
+
+[dependencies]
+anyhow = "1"
+# Genome-stats kernels from rustyomestats (pure compute_nl / codon counters; no
+# polars/bio). The heavy CSV/U50/FragGeneScan path is behind rustyomestats' own
+# `full` feature (rustc 1.85+) and is not enabled here.
+rustyomestats = { path = "../vendor/rustyomestats", default-features = false }
+# SAM/BAM/BGZF (pure-Rust htslib equivalent). Pinned for rustc 1.75.
+noodles-sam = "=0.52.0"
+noodles-bam = "=0.55.0"
+noodles-bgzf = "=0.26.0"
+# MSRV pin: newer indexmap requires Cargo edition2024 (unavailable on 1.75).
+indexmap = "=2.2.6"
+
+[dependencies.flate2]
+version = "1"
+default-features = false
+features = ["rust_backend"]
+optional = true
+
+[features]
+default = ["gzip"]
+# Transparent gzip input for text formats (pure-Rust miniz_oxide backend).
+gzip = ["dep:flate2"]
