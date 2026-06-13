@@ -173,12 +173,12 @@ pub fn split_alignment(input: &Path, dest: &Path, records_per_chunk: u64, fmt: F
 // Conversion (SAM <-> BAM via RecordBuf; FASTQ -> FASTA)
 // ---------------------------------------------------------------------------
 
-enum AlignReader {
+pub(crate) enum AlignReader {
     Sam(sam::io::Reader<Box<dyn BufRead>>),
     Bam(bam::io::Reader<bgzf::Reader<File>>),
 }
 
-fn open_align_reader(input: &Path, fmt: Format) -> Result<AlignReader> {
+pub(crate) fn open_align_reader(input: &Path, fmt: Format) -> Result<AlignReader> {
     Ok(match fmt {
         Format::Sam => {
             let (br, _gz) = crate::open_reader(input)?;
@@ -192,7 +192,7 @@ fn open_align_reader(input: &Path, fmt: Format) -> Result<AlignReader> {
     })
 }
 
-fn read_align_header(reader: &mut AlignReader) -> Result<sam::Header> {
+pub(crate) fn read_align_header(reader: &mut AlignReader) -> Result<sam::Header> {
     Ok(match reader {
         AlignReader::Sam(r) => r.read_header().context("reading SAM header")?,
         AlignReader::Bam(r) => r.read_header().context("reading BAM header")?,

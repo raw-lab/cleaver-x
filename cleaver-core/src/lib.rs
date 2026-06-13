@@ -24,7 +24,9 @@ mod size;
 pub use size::parse_size;
 
 pub mod align;
+pub mod annotation;
 pub mod compute;
+pub mod count;
 pub mod formats;
 pub mod genome;
 pub mod stats;
