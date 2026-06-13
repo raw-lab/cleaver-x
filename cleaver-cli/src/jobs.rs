@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use cleaver_core::{align, chunk_file, formats, genome, Config, Format, Match, Mode};
+use cleaver_core::{align, annotation, chunk_file, count, formats, genome, Config, Format, Match, Mode};
 
 use crate::gpu;
 
@@ -117,7 +117,6 @@ pub struct StatsJob {
     pub format: Option<String>,
 }
 
-/// Full genome statistics for one file (flat scalars so it ships over HydraMPP).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsOutcome {
     pub input: PathBuf,
@@ -131,7 +130,6 @@ pub struct StatsOutcome {
     pub n50: u64,
     pub l50: u64,
     pub n90: u64,
-    pub l90: u64,
     pub gc_percent: f64,
     pub a: u64,
     pub c: u64,
@@ -139,7 +137,7 @@ pub struct StatsOutcome {
     pub t: u64,
     pub n: u64,
     pub other: u64,
-    /// Which backend tallied base composition: `cpu` or `gpu:<id>`.
+    /// Which backend produced the base composition: `cpu` or `gpu:<id>`.
     pub device: String,
     pub error: String,
 }
@@ -160,11 +158,8 @@ fn pinned_device() -> Option<usize> {
     None
 }
 
-/// Compute full genome statistics for one file. Base composition is tallied on
-/// the GPU when the kernel is compiled in and a device is pinned (the same
-/// reduction as `compute::count_bytes`), and reused by the length pass;
-/// otherwise lengths and composition are tallied together in one CPU pass. The
-/// N/L assembly metrics come from `rustyomestats::stats::compute_nl`.
+/// Compute genome statistics for one file. Base composition runs on the GPU
+/// when available (else CPU); the N50/length pass is CPU.
 pub fn do_stats(job: StatsJob) -> StatsOutcome {
     let device = pinned_device();
     let run = || -> anyhow::Result<(genome::GenomeStats, String)> {
@@ -172,33 +167,17 @@ pub fn do_stats(job: StatsJob) -> StatsOutcome {
             Some(f) => f,
             None => formats::detect(&job.input)?,
         };
-        if matches!(fmt, Format::Sam | Format::Bam) {
-            anyhow::bail!("stats expects FASTA/FASTQ (got {})", fmt_name(fmt));
+        if !fmt.is_sequence() {
+            anyhow::bail!("stats expects FASTA/FASTQ input, got {}", fmt_name(fmt));
         }
-
-        // GPU base-composition path when compiled in and a device is pinned;
-        // its counts are then reused so the length pass skips re-counting.
-        let (precomputed, backend) = if gpu::compute_enabled() && device.is_some() {
-            match gpu::count_file_accel(&job.input, fmt, device) {
-                Ok((c, b)) => (Some(c), b),
-                Err(e) => {
-                    eprintln!("  warning: GPU count failed ({e:#}); using CPU");
-                    (None, "cpu")
-                }
-            }
-        } else {
-            (None, "cpu")
-        };
-
-        let gs = genome::genome_stats_file(&job.input, fmt, precomputed)?;
+        let (counts, backend) = gpu::count_file_accel(&job.input, fmt, device)?;
+        let stats = genome::genome_stats_file(&job.input, fmt, Some(counts))?;
         let dev = match (backend, device) {
             ("gpu", Some(d)) => format!("gpu:{d}"),
-            // Scheduler pinned a device but the CUDA kernel isn't compiled in
-            // (built without --features gpu): work ran on CPU, device shown.
             ("cpu", Some(d)) => format!("cpu(gpu:{d})"),
             _ => "cpu".to_string(),
         };
-        Ok((gs, dev))
+        Ok((stats, dev))
     };
     match run() {
         Ok((s, device)) => StatsOutcome {
@@ -213,7 +192,6 @@ pub fn do_stats(job: StatsJob) -> StatsOutcome {
             n50: s.n50(),
             l50: s.l50(),
             n90: s.n90(),
-            l90: s.l90(),
             gc_percent: s.gc_percent,
             a: s.counts.a,
             c: s.counts.c,
@@ -236,7 +214,6 @@ pub fn do_stats(job: StatsJob) -> StatsOutcome {
             n50: 0,
             l50: 0,
             n90: 0,
-            l90: 0,
             gc_percent: 0.0,
             a: 0,
             c: 0,
@@ -245,6 +222,114 @@ pub fn do_stats(job: StatsJob) -> StatsOutcome {
             n: 0,
             other: 0,
             device: "cpu".to_string(),
+            error: format!("{e:#}"),
+        },
+    }
+}
+
+// ----------------------------------------------------------------------------
+// count (featureCounts / htseq-style read counting)
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountJob {
+    pub input: PathBuf,
+    pub annotation: PathBuf,
+    pub feature_type: String,
+    pub group_by: String,
+    pub stranded: u8,
+    pub min_mapq: u8,
+    pub count_multimappers: bool,
+    pub allow_multi_overlap: bool,
+    /// 0 = union, 1 = intersection-strict, 2 = intersection-nonempty.
+    pub mode: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountOutcome {
+    pub input: PathBuf,
+    pub ok: bool,
+    pub sample: String,
+    /// Number of indexed feature lines (of the requested type).
+    pub n_features: u64,
+    /// Meta-feature ids in annotation first-seen order (shared across inputs).
+    pub gene_ids: Vec<String>,
+    pub counts: Vec<u64>,
+    pub assigned: u64,
+    pub no_feature: u64,
+    pub ambiguous: u64,
+    pub unmapped: u64,
+    pub low_mapq: u64,
+    pub multimapping: u64,
+    pub total: u64,
+    pub error: String,
+}
+
+fn mode_from_u8(m: u8) -> annotation::Mode {
+    match m {
+        1 => annotation::Mode::IntersectionStrict,
+        2 => annotation::Mode::IntersectionNonempty,
+        _ => annotation::Mode::Union,
+    }
+}
+
+/// Count one alignment file against its annotation. Pure over `CountJob`: the
+/// annotation is (re)parsed here so the unit is self-contained on any worker.
+pub fn do_count(job: CountJob) -> CountOutcome {
+    let sample = job
+        .input
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sample")
+        .to_string();
+    let run = || -> anyhow::Result<(Vec<String>, u64, count::FileCounts)> {
+        let fmt = formats::detect(&job.input)?;
+        if !fmt.is_alignment() {
+            anyhow::bail!("count expects SAM/BAM input, got {}", fmt_name(fmt));
+        }
+        let ann = annotation::Annotation::from_path(&job.annotation, &job.feature_type, &job.group_by)?;
+        let params = count::CountParams {
+            stranded: job.stranded,
+            min_mapq: job.min_mapq,
+            count_multimappers: job.count_multimappers,
+            allow_multi_overlap: job.allow_multi_overlap,
+            mode: mode_from_u8(job.mode),
+            primary_only: true,
+        };
+        let fc = count::count_file(&job.input, fmt, &ann, &params)?;
+        Ok((ann.gene_ids().to_vec(), ann.n_features, fc))
+    };
+    match run() {
+        Ok((gene_ids, n_features, fc)) => CountOutcome {
+            input: job.input,
+            ok: true,
+            sample,
+            n_features,
+            gene_ids,
+            counts: fc.counts,
+            assigned: fc.assigned,
+            no_feature: fc.no_feature,
+            ambiguous: fc.ambiguous,
+            unmapped: fc.unmapped,
+            low_mapq: fc.low_mapq,
+            multimapping: fc.multimapping,
+            total: fc.total,
+            error: String::new(),
+        },
+        Err(e) => CountOutcome {
+            input: job.input,
+            ok: false,
+            sample,
+            n_features: 0,
+            gene_ids: Vec::new(),
+            counts: Vec::new(),
+            assigned: 0,
+            no_feature: 0,
+            ambiguous: 0,
+            unmapped: 0,
+            low_mapq: 0,
+            multimapping: 0,
+            total: 0,
             error: format!("{e:#}"),
         },
     }

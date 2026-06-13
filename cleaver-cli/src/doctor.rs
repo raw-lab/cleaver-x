@@ -2,16 +2,18 @@
 //!
 //! This is a real self-test, not a stub: it writes tiny inputs to a temp dir and
 //! exercises the actual engine (FASTA splitting, FASTQ→FASTA, SAM↔BAM round-trip,
-//! mapped/unmapped partition, base-composition stats), checks GPU detection, and
-//! — when built `--features hydra` — runs a live local HydraMPP task. It prints a
-//! pass/fail line per check and exits non-zero if anything fails.
+//! mapped/unmapped partition, base composition, genome stats/N50, and
+//! featureCounts/htseq counting), checks GPU detection, and — when built
+//! `--features hydra` — runs a live local HydraMPP task. It prints a pass/fail
+//! line per check and exits non-zero if anything fails.
 
 use std::fs;
 use std::io::Write;
 
 use anyhow::{anyhow, Result};
 
-use cleaver_core::{align, chunk_file, compute, formats, genome, Config, Format, Match, Mode};
+use cleaver_core::{align, annotation, chunk_file, compute, count, formats, Config, Format, Match, Mode};
+use cleaver_core::genome;
 
 use crate::gpu;
 
@@ -39,7 +41,7 @@ fn concat(paths: &[std::path::PathBuf]) -> Result<Vec<u8>> {
 
 pub fn run() -> Result<()> {
     print!("{}", crate::BANNER);
-    println!("doctor — self-test\n");
+    println!("cleaver doctor — self-test\n");
 
     // ---- build / environment ------------------------------------------------
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
@@ -144,21 +146,49 @@ pub fn run() -> Result<()> {
         Ok(format!("28 bases, GC=50.0% ({dev})"))
     });
 
-    // ---- genome stats (rustyomestats compute_nl) ---------------------------
+    // ---- genome stats (N50/L50) --------------------------------------------
     run("genome stats (N50)", &mut || {
-        // d.fasta records: a=12, b=8, c=8 -> total 28; lengths desc 12,8,8
-        // 50% = 14 -> cum 12 (<14), +8 = 20 >= 14 -> N50 = 8, L50 = 2
+        // d.fasta sequences are 12, 8, 8 bp -> total 28, N50=8, L50=2.
         let s = genome::genome_stats_file(&fasta, Format::Fasta, None)?;
-        if s.n_seqs != 3 || s.total_bp != 28 {
-            return Err(anyhow!("expected 3 seqs / 28 bp, got {} / {}", s.n_seqs, s.total_bp));
+        if (s.n_seqs, s.total_bp) != (3, 28) {
+            return Err(anyhow!("expected 3 seqs / 28 bp, got {}/{}", s.n_seqs, s.total_bp));
         }
-        if (s.max_len, s.min_len, s.n50(), s.l50()) != (12, 8, 8, 2) {
+        if (s.n50(), s.l50()) != (8, 2) {
+            return Err(anyhow!("expected N50=8 L50=2, got N50={} L50={}", s.n50(), s.l50()));
+        }
+        Ok(format!("3 seqs, N50={} L50={} GC={:.1}%", s.n50(), s.l50(), s.gc_percent))
+    });
+
+    // ---- count (featureCounts/htseq) ---------------------------------------
+    run("count (featureCounts)", &mut || {
+        let gtf = tmp.join("d.gtf");
+        fs::write(
+            &gtf,
+            b"chr1\ts\texon\t100\t300\t.\t+\t.\tgene_id \"gX\";\n\
+              chr1\ts\texon\t200\t400\t.\t+\t.\tgene_id \"gY\";\n",
+        )?;
+        let csam = tmp.join("d.count.sam");
+        fs::write(
+            &csam,
+            b"@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:2000\n\
+              rA\t0\tchr1\t120\t60\t50M\t*\t0\t0\t*\t*\n\
+              rB\t0\tchr1\t250\t60\t20M\t*\t0\t0\t*\t*\n\
+              rC\t0\tchr1\t900\t60\t20M\t*\t0\t0\t*\t*\n",
+        )?;
+        let ann = annotation::Annotation::from_path(&gtf, "exon", "gene_id")?;
+        let fc = count::count_file(&csam, Format::Sam, &ann, &count::CountParams::default())?;
+        if (fc.assigned, fc.ambiguous, fc.no_feature) != (1, 1, 1) {
             return Err(anyhow!(
-                "metrics off: max={} min={} N50={} L50={}",
-                s.max_len, s.min_len, s.n50(), s.l50()
+                "expected 1 assigned / 1 ambiguous / 1 no-feature, got {}/{}/{}",
+                fc.assigned,
+                fc.ambiguous,
+                fc.no_feature
             ));
         }
-        Ok(format!("3 seqs, 28 bp, N50=8 L50=2, GC={:.0}%", s.gc_percent))
+        if ann.n_genes() != 2 || fc.counts[0] != 1 {
+            return Err(anyhow!("expected gX=1 over 2 meta-features"));
+        }
+        Ok("3 reads -> 1 assigned, 1 ambiguous, 1 no-feature".into())
     });
 
     // ---- format detection ---------------------------------------------------
