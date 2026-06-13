@@ -9,10 +9,6 @@ description = "Record-aware engine: streaming FASTA/FASTQ chunking + SAM/BAM spl
 
 [dependencies]
 anyhow = "1"
-# Genome-stats kernels from rustyomestats (pure compute_nl / codon counters; no
-# polars/bio). The heavy CSV/U50/FragGeneScan path is behind rustyomestats' own
-# `full` feature (rustc 1.85+) and is not enabled here.
-rustyomestats = { path = "../vendor/rustyomestats", default-features = false }
 # SAM/BAM/BGZF (pure-Rust htslib equivalent). Pinned for rustc 1.75.
 noodles-sam = "=0.52.0"
 noodles-bam = "=0.55.0"
