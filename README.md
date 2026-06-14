@@ -16,16 +16,16 @@
 [![License](https://img.shields.io/badge/license-CC--BY--NC--4.0-blue.svg)](#-license)
 [![Scaling](https://img.shields.io/badge/scaling-rayon%20%2B%20HydraMPP-blueviolet.svg)](#-parallelism-in-node--cross-node)
 
-**A streaming, record-aware splitter and converter for the everyday sequence and
-alignment formats.** Cleaver splits FASTA, FASTQ, SAM, and BAM into chunks
-**without ever cutting a record in half**; converts between SAM and BAM (with
-**mapped/unmapped** partitioning) and FASTQ→FASTA; reports **full genome
-statistics** (N50/L50/N90, length min/max/mean/median, GC%, A/C/G/T/N) via the
-vendored **[rustyomestats](https://crates.io/crates/rustyomestats)** (`stats`);
-and fans work out one-file-per-task — on a work-stealing pool in-node, or across a
-whole cluster via the vendored **HydraMPP** engine. The sequence path streams at
-constant memory; the alignment path uses
-[`noodles`](https://github.com/zaeleus/noodles), the pure-Rust htslib equivalent.
+**A streaming, record-aware toolkit for the everyday sequence and alignment
+formats.** Cleaver splits FASTA, FASTQ, SAM, and BAM into chunks **without ever
+cutting a record in half**; converts between SAM and BAM (with **mapped/unmapped**
+partitioning) and FASTQ→FASTA; reports **genome/assembly statistics** (N50/L50/N90,
+lengths, GC%); **counts reads per feature** from one or more BAM/SAM files against
+a GTF/GFF annotation (**featureCounts/htseq-style**); and fans work out
+one-file-per-task — on a work-stealing pool in-node, or across a whole cluster via
+the vendored **HydraMPP** engine. The sequence path streams at constant memory;
+the alignment path uses [`noodles`](https://github.com/zaeleus/noodles), the
+pure-Rust htslib equivalent.
 
 ---
 
@@ -46,30 +46,30 @@ extension, falling back to a content sniff. Chunks keep the input's extension
 
 ## 📥 Install
 
-`cargo build` only writes `target/release/cleaver` — that path is **not** on your
-`PATH`, so bare `cleaver` gives `command not found`. The bundled installer builds
-the binary and drops a `cleaver` command **directly onto your PATH**:
+> **`cargo build` does *not* put `cleaver` on your `PATH`.** It writes the binary
+> to `target/release/cleaver`; typing bare `cleaver` then gives
+> `cleaver: command not found`. Pick one of these:
 
 ```bash
-./install.sh                 # build + install (adds the dir to PATH if needed)
-./install.sh hydra           # build --features hydra, then install
-DEST=/usr/local/bin ./install.sh   # system-wide (uses sudo if required)
+# A) one-shot installer: builds release + puts `cleaver` on your PATH (recommended)
+./install.sh                  # default backend; ./install.sh hydra  or  hydra,gpu
+#   DEST=/usr/local/bin ./install.sh   to choose the install dir
 
-cleaver doctor               # verify the install is healthy
-```
+# B) cargo install
+cargo install --path cleaver-cli            # -> ~/.cargo/bin/cleaver
+export PATH="$HOME/.cargo/bin:$PATH"        # if not already; add to ~/.bashrc / ~/.zshrc
 
-`install.sh` installs to `~/.cargo/bin` (or `~/.local/bin`) and, if that
-directory isn't already on your `PATH`, appends it to your shell rc and tells you
-to open a new shell. Equivalent manual routes:
+# C) or build and run by full path
+cargo build --release
+./target/release/cleaver doctor
 
-```bash
-cargo install --path cleaver-cli            # -> ~/.cargo/bin/cleaver (idiomatic)
-# or copy the built binary onto an existing PATH dir:
-cargo build --release && install -m 0755 target/release/cleaver ~/.local/bin/
+# then confirm the install is healthy:
+cleaver doctor
+cleaver --version      # also -v
 ```
 
 Add `--features hydra` (cluster backend) and/or `--features gpu` (CUDA stats
-kernel) to `./install.sh`, `cargo install`, or `cargo build`.
+kernel) to either `cargo install` or `cargo build`.
 
 ## 🩺 Self-test (`cleaver doctor`)
 
@@ -109,8 +109,12 @@ cleaver convert aln.sam aln.bam --mapped-only      # keep only mapped reads
 cleaver convert aln.sam aln.bam --unmapped-only    # keep only unmapped reads
 cleaver convert aln.sam aln.bam --partition        # -> aln.mapped.bam + aln.unmapped.bam
 
-# stats — full genome statistics: N50/L50/N90, lengths, GC%, A/C/G/T/N (parallel across files)
+# stats — genome/assembly statistics: N50/L50/N90, lengths, GC% (GPU base-comp if built --features gpu)
 cleaver stats genome.fna contigs.ffn reads.fq
+
+# count — featureCounts/htseq-style reads-per-feature from BAM/SAM vs a GTF/GFF
+cleaver count sampleA.bam sampleB.bam sampleC.bam -a genes.gtf -o counts.tsv
+#   -> counts.tsv (gene x sample matrix) + counts.tsv.summary (assignment categories)
 
 # environment / accelerators / backend
 cleaver info
@@ -118,10 +122,8 @@ cleaver info
 # health check (verify the install and every code path)
 cleaver doctor
 
-# help & version (these replace --help / --version)
-cleaver -h                 # full options + examples   (also: cleaver help)
-cleaver help stats         # detailed help for one command
-cleaver version            # ASCII banner + build config   (also: -v)
+# version
+cleaver --version          # or -v
 ```
 
 ### Scaling across a cluster (HydraMPP)
@@ -150,135 +152,110 @@ BAM, a finalised BGZF EOF block), so each chunk is an independently valid file.
 
 ## 📖 CLI reference
 
-```
-cleaver [GLOBAL OPTIONS] <COMMAND> [ARGS]
-```
+`-h` shows help for any command (every command prints the banner); `-v` /
+`--version` prints the version. Built `--features hydra`, the cluster flags
+`--head`, `--client <ADDR>`, `--cpus <N>`, `--sim-gpus <N>`, `--port <PORT>` are
+available globally.
 
-`-h` works on **every** command (`cleaver -h`, `cleaver split -h`, …) and is
-equivalent to `cleaver help [COMMAND]`. `--help` and `--version` are intentionally
-not provided — use `-h` / `help` and `-v` / `version`.
+### `cleaver split <INPUTS>…`
+Record-aware chunking, one task per file.
 
-### Global options (accepted by every command)
+| Flag | Default | Meaning |
+|---|---|---|
+| `-o, --outdir <DIR>` | *required* | Output dir; chunks named `<stem>.NNNNN.<ext>`. |
+| `-c, --chunk-size <SIZE>` | `1G` | Max chunk size for FASTA/FASTQ (`1G`, `256M`, `50Mi`, …). |
+| `-r, --records <N>` | `1000000` | Records per chunk for SAM/BAM. |
+| `-t, --threads <N>` | `0` | In-node worker threads (0 = all cores). |
+| `--format <fasta\|fastq\|sam\|bam>` | auto | Force a format. |
 
-| Option | Description |
+### `cleaver convert <INPUT> <OUTPUT>`
+SAM↔BAM (BGZF) and FASTQ→FASTA; the target is taken from `<OUTPUT>`'s extension.
+
+| Flag | Meaning |
 |---|---|
-| `-h` | Print help (top-level, or for the current command). Same as `cleaver help [COMMAND]`. |
-| `-v` | Print the ASCII banner, version, and build configuration. Same as `cleaver version`. |
+| `--partition` | Alignment: write `<out>.mapped.<ext>` + `<out>.unmapped.<ext>`. |
+| `--mapped-only` | Keep mapped records only. |
+| `--unmapped-only` | Keep unmapped records only. |
 
-### Cluster options — only in the `--features hydra` build (global on every command)
+### `cleaver stats <INPUTS>…`
+Genome/assembly statistics for FASTA/FASTQ (rejects SAM/BAM). Per file and a
+`TOTAL`: sequence count, total bp, min/max/mean/median length, **N50 / L50 /
+N90**, GC%, and the compute device. Base composition runs on the GPU with
+`--features gpu`; the length/N50 pass is CPU. The N/L assembly metrics are
+computed by the vendored [`rustyomestats`](https://github.com/raw-lab/rustyomestats)
+crate (`stats::compute_nl`); it is vendored in-tree at `vendor/rustyomestats` and
+built dependency-free (its heavier `full` feature — bio/polars/plotters and the
+CLI — is not enabled, so cleaver still compiles on rustc 1.75).
 
-| Option | Value | Default | Description |
-|---|---|---|---|
-| `--head` | (flag) | off | Run this process as a HydraMPP **head** node; workers connect to it. |
-| `--client <ADDR>` | host or host:port | — | Join a head at `ADDR` as a worker/client. |
-| `--cpus <N>` | integer | all logical cores | CPUs to advertise to the scheduler. |
-| `--sim-gpus <N>` | integer | 0 | Advertise/schedule `N` GPUs; simulates GPUs on a CPU-only box to exercise device pinning. |
-| `--port <PORT>` | 1–65535 | HydraMPP default | TCP port for the head/client. |
-
----
-
-### `cleaver split <INPUTS>... -o <OUTDIR> [OPTIONS]`
-
-Split files into record-aware chunks — FASTA/FASTQ by **size**, SAM/BAM by
-**record count** — never cutting a record. Multiple inputs run in parallel.
-
-| Argument / option | Default | Description |
+| Flag | Default | Meaning |
 |---|---|---|
-| `<INPUTS>...` | *(required, ≥1)* | Input files: FASTA (`.fasta/.fa/.fna/.ffn/.faa/.frn/.mpfa`), FASTQ (`.fastq/.fq`), SAM (`.sam`), BAM (`.bam`). `.gz` is decompressed transparently. |
-| `-o, --outdir <OUTDIR>` | *(required)* | Output directory. Chunks are written as `<stem>.NNNNN.<ext>` (zero-padded index), e.g. `genome.00000.fasta`. |
-| `-c, --chunk-size <SIZE>` | `1G` | Approx. max **bytes per chunk** for FASTA/FASTQ. A unit suffix is **required**: `B K M G T P E Z Y` (case-insensitive) or IEC `Ki Mi Gi …`, or long forms (`kilo`/`mega`/`giga`/`kibi`/`mebi`/…). **All are 1024-based** (`1K`=1024, `1M`=1048576). Fractions allowed (`0.5G`). Ignored for SAM/BAM. |
-| `-r, --records <N>` | `1000000` | Records per chunk for **SAM/BAM**. Ignored for FASTA/FASTQ. |
-| `-t, --threads <N>` | `0` (all cores) | Worker threads for the in-node backend. *(Ignored in the `--features hydra` build — use `--cpus`.)* |
-| `--format <FMT>` | auto-detect | Force input format: `fasta`, `fastq`, `sam`, or `bam`. |
+| `-t, --threads <N>` | `0` | In-node worker threads (0 = all cores). |
+| `--format <…>` | auto | Force a format. |
 
-```bash
-cleaver split genome.fasta -o chunks/ -c 500M        # ~500 MB FASTA chunks
-cleaver split reads.fastq.gz -o chunks/ -c 200M      # gzip in, FASTQ by size
-cleaver split aln.bam -o chunks/ -r 500000           # 500k records / chunk
-cleaver split a.fna b.fna c.fna -o chunks/ -t 8      # 3 inputs, 8 worker threads
-cleaver split contigs.txt -o chunks/ --format fasta  # force the format
-cleaver split genome.fasta -o chunks/ -c 1073741824B # raw bytes (suffix required)
-```
+### `cleaver count <INPUTS>… -a <GTF/GFF> -o <MATRIX>`
+featureCounts/htseq-style reads-per-feature from **one or more** BAM/SAM files
+against a GTF/GFF annotation. Flag names mirror featureCounts.
 
----
-
-### `cleaver convert <INPUT> <OUTPUT> [OPTIONS]`
-
-Convert between formats; the **direction is inferred from the file extensions**.
-Supports SAM↔BAM (BGZF) and FASTQ→FASTA. The three filter flags apply to
-alignment inputs only.
-
-| Argument / option | Default | Description |
+| Flag | Default | Meaning |
 |---|---|---|
-| `<INPUT>` | *(required)* | Input file (format from extension/content). |
-| `<OUTPUT>` | *(required)* | Output file; its **extension selects the target** (`.bam`, `.sam`, `.fasta/.fa`). |
-| `--partition` | off | *(alignment only)* Write mapped and unmapped records to **two** files: `<out_stem>.mapped.<ext>` and `<out_stem>.unmapped.<ext>`. Mutually exclusive with `--mapped-only` / `--unmapped-only`. |
-| `--mapped-only` | off | *(alignment only)* Keep only mapped records. Mutually exclusive with `--unmapped-only`. |
-| `--unmapped-only` | off | *(alignment only)* Keep only unmapped records. |
+| `-a, --annotation <FILE>` | *required* | GTF or GFF3 annotation. |
+| `-o, --output <FILE>` | *required* | Count matrix (TSV); `<output>.summary` written alongside. |
+| `-t, --feature-type <TYPE>` | `exon` | Column-3 feature type to count. |
+| `-g, --group-by <ATTR>` | `gene_id` | Attribute grouping features into meta-features. |
+| `-s, --stranded <0\|1\|2>` | `0` | 0 unstranded · 1 stranded · 2 reverse-stranded. |
+| `-Q, --min-mapq <N>` | `0` | Drop alignments below this MAPQ. |
+| `-M, --count-multimappers` | off | Count `NH>1` reads (else discarded). |
+| `-O, --allow-multi-overlap` | off | Count reads hitting several meta-features for all of them. |
+| `--mode <union\|strict\|nonempty>` | `union` | htseq overlap resolution. |
+| `-T, --threads <N>` | `0` | In-node worker threads, one file per task (0 = all cores). |
+
+**Outputs.** `<output>` is a meta-feature × sample matrix — a `gene_id` column
+then one column per input file (named by basename). `<output>.summary` is the
+featureCounts category table (`Assigned`, `Unassigned_NoFeatures`,
+`Unassigned_Ambiguity`, `Unassigned_MultiMapping`, `Unassigned_MappingQuality`,
+`Unassigned_Unmapped`) per file. A per-file assignment recap prints to stdout.
 
 ```bash
-cleaver convert aln.sam aln.bam              # SAM -> BAM (BGZF-compressed)
-cleaver convert aln.bam aln.sam              # BAM -> SAM
-cleaver convert aln.bam kept.bam --mapped-only
-cleaver convert aln.bam drop.bam --unmapped-only
-cleaver convert aln.sam out.sam --partition  # -> out.mapped.sam + out.unmapped.sam
-cleaver convert reads.fastq reads.fasta      # drop quality lines
+# exons by gene across three BAMs, unstranded, drop MAPQ < 10
+cleaver count A.bam B.bam C.bam -a genes.gtf -o counts.tsv -Q 10
+
+# reverse-stranded library; count CDS grouped by gene; strict overlaps
+cleaver count *.bam -a anno.gff3 -o cds.tsv -s 2 -t CDS --mode strict
 ```
 
----
+**Counting model.** Each primary, mapped alignment passing the MAPQ/multimapper
+filters is reduced to its reference blocks (CIGAR `M/=/X/D` extend a block, `N`
+splits at introns) and tested against the index. Exactly one meta-feature →
+*assigned*; none → *no-feature*; more than one → *ambiguous* (unless `-O`).
+`--mode union` (default, == featureCounts' any-overlap) counts any feature
+touching the read; `strict` requires every base of the read to be covered;
+`nonempty` is strict over only the covered bases. The N/L and overlap algorithms
+follow the standard featureCounts/htseq definitions.
 
-### `cleaver stats <INPUTS>... [OPTIONS]`
+**Caveats.** Reads are counted individually (single-end semantics); paired ends
+are counted per mate, not per fragment. The annotation is parsed once per input
+file; under `--features hydra` it must be readable on each worker node.
 
-Full genome statistics — one row per file plus a `TOTAL` row: `seqs`, `total_bp`,
-`min` / `max` / `mean` / `median` length, **N50 / L50 / N90**, `GC%`, and
-`A / C / G / T / N`. N/L metrics come from rustyomestats' `compute_nl`.
-
-| Argument / option | Default | Description |
-|---|---|---|
-| `<INPUTS>...` | *(required, ≥1)* | FASTA/FASTQ files; `.gz` transparent. Files run in parallel. |
-| `--format <FMT>` | auto-detect | Force `fasta` or `fastq`. (`sam`/`bam` are rejected — stats is for sequence files.) |
-| `-t, --threads <N>` | `0` (all cores) | Worker threads for the in-node backend. *(Ignored under `--features hydra`.)* |
-
-```bash
-cleaver stats genome.fasta                   # single file
-cleaver stats *.fasta *.fastq.gz             # many files + TOTAL row
-cleaver stats reads.fastq.gz --format fastq  # force format
-cleaver --sim-gpus 4 stats *.fna             # (hydra build) GPU scheduling demo
-```
-
----
-
-### `cleaver version`  ·  `cleaver doctor`  ·  `cleaver info`  ·  `cleaver help`
-
-These take no options.
-
-| Command | What it does |
-|---|---|
-| `cleaver version` *(or `-v`)* | Print the ASCII banner, version, and build configuration (scaling backend, whether the GPU kernel is compiled, logical cores). |
-| `cleaver doctor` | Self-test the install — writes tiny inputs and exercises FASTA split (+ lossless reassembly), FASTQ→FASTA, SAM↔BAM round-trip, mapped/unmapped partition, base composition/GC, **genome stats (N50)**, format detection, GPU detection, and — with `--features hydra` — a live local HydraMPP task. Exits non-zero on any failure. |
-| `cleaver info` | Show version, active scaling backend, GPU-kernel status, NVIDIA GPUs detected via `nvidia-smi`, supported formats, and what `convert`/`stats` do. |
-| `cleaver help [COMMAND]` | Print help; `cleaver help <command>` shows that command's full options and examples. Equivalent to `-h`. |
-
-```bash
-cleaver version          # or: cleaver -v
-cleaver doctor
-cleaver info
-cleaver help split       # detailed help for one command (same as: cleaver split -h)
-```
+### `cleaver version` · `cleaver doctor` · `cleaver info`
+`version` prints the banner, version, backend, and GPU-kernel status. `doctor`
+runs the built-in self-test (splitting, conversion, partition, base composition,
+genome N50, counting, format/GPU detection, and a live HydraMPP task when built
+`--features hydra`). `info` lists version, cores, backend, GPUs, and the
+supported formats/commands.
 
 ---
----
+
 ## 🧩 How it works
 
-```mermaid 
+```mermaid
 flowchart LR
     A[inputs] --> D{detect format}
-    D -->|FASTA/FASTQ| S[streaming engine<br/>O(1) memory, record-aware]
-    D -->|SAM| T[text splitter<br/>header replicated]
-    D -->|BAM| B[noodles reader/writer<br/>BGZF finalised per chunk]
-    A --> P[work-stealing pool<br/>one task per file]
+    D -->|FASTA/FASTQ| S["streaming engine<br/>O(1) memory, record-aware"]
+    D -->|SAM| T["text splitter<br/>header replicated"]
+    D -->|BAM| B["noodles reader/writer<br/>BGZF finalised per chunk"]
+    A --> P["work-stealing pool<br/>one task per file"]
     P --- D
-    S --> O[(chunks)]
+    S --> O[("chunks")]
     T --> O
     B --> O
 ```
@@ -339,38 +316,6 @@ compiled in, and any NVIDIA GPUs detected via `nvidia-smi` (no build dependency)
 
 ---
 
-## 🧬 Genome statistics (rustyomestats)
-
-`cleaver stats` reports a full genome-statistics table — one row per file, plus a
-`TOTAL` row across files:
-
-```text
-  file                       seqs      total_bp      min       max       mean   median        N50   L50       N90    GC%           A           C           G           T         N     device
-  genome.fna                  176      4_215_606      842    142_318    23_952    18_440    41_207    34    12_905  61.40   1_010_233   1_097_588   1_101_402   1_006_383     1_998        cpu
-```
-
-The N/L assembly metrics (**N25/N50/N75/N90** and the matching **L** indices) are
-computed by **rustyomestats**' own `compute_nl` kernel — the exact function the
-standalone `rustyomestats` tool uses — so the numbers agree. Lengths and base
-composition are gathered in a single streaming pass (one `usize` per sequence is
-the only growth in memory); when built `--features gpu`, the A/C/G/T/N tally is
-offloaded to the GPU and reused by the length pass.
-
-rustyomestats is **vendored** at `vendor/rustyomestats`. Its pure stat kernels
-(`compute_nl`, the 6-frame codon counters, the Castro `n_stat`) need only `std`
-and build on **rustc 1.75**, so they are wired into cleaver's default build and
-exercised by the test suite (`cargo test -p rustyomestats`). Its heavier
-capabilities — **codon density** CSVs, the full **Castro U50/UG50** assembly
-metrics from a reference + BED, and **FragGeneScan** ORF-density — depend on
-`polars` + `bio` and are gated behind rustyomestats' own `full` feature
-(**rustc ≥ 1.85**); build and run them through the vendored crate's CLI:
-
-```bash
-cargo run -p rustyomestats --features full -- genome --input contigs.fna --outdir stats/
-```
-
----
-
 ## 🏁 Benchmarks
 
 Measured in-sandbox (single core, rustc 1.75, warm cache, best of 3). No numbers
@@ -407,6 +352,34 @@ single core: **1.52 s at 4.6 MB RSS** (~115 M bases/s), memory flat. The GPU
 kernel (`--features gpu`) targets this same reduction on CUDA hardware.
 
 ---
+
+## 🐞 Bug audit ("find any bugs")
+
+Found and fixed while building this:
+
+1. **Duplicate `noodles-sam` in the dependency tree** — pinning `noodles-sam 0.50`
+   while `noodles-bam 0.55` requires `0.52` put *two* copies of the crate in the
+   graph, so `alignment::io::Write` and `RecordBuf: Record` came from different
+   crates and didn't match (`finish`/`write_alignment_record` "not satisfied").
+   Fixed by aligning to `0.52`.
+2. **Silent MSRV walls** — `indexmap 2.14` and `rayon-core 1.13` require
+   edition2024 / rustc ≥ 1.80. Pinned to `2.2.6` and `1.12.1`.
+3. **Wrong unit-test expectation in the base counter** — the FASTA `stats` test
+   asserted `C:4 / total:15 / GC:7÷13` for input `ACGT|AACC|GGTTNN`, which
+   actually has `C:3 / total:14 / GC:0.5`; the kernel was right, the test was
+   miscounted. Corrected the expectation (caught by running the suite, not by
+   eye).
+
+Verified correct, no bug: the FASTA engine is byte-identical to the Python
+original; BAM chunks re-read as valid BAM with record counts summing exactly
+(50k and 300k runs); SAM chunks each carry the header.
+
+Honest sharp edges: a wrong/never-matching delimiter yields one giant chunk
+(mitigated by the start-of-line default); memory scales with the longest *line*,
+not the file; `--contains` is an O(n·m) scan; and two inputs sharing a stem
+(e.g. `x.ffn` and `x.ffn.gz`) write the same chunk names into one `-o` dir —
+split same-stem inputs separately.
+
 ---
 
 ## 🔧 Build
@@ -416,27 +389,28 @@ kernel (`--features gpu`) targets this same reduction on CUDA hardware.
 cargo build --release            # -> target/release/cleaver  (rayon backend)
 cargo build --release --features hydra   # + HydraMPP cluster backend
 cargo build --release --features gpu     # + CUDA stats kernel (needs CUDA toolkit, rustc 1.85+)
-cargo test --workspace                   # unit + doctests, all passing
+cargo test --workspace           # 15 unit + doctests, all passing
 ```
 
 MSRV is held at **1.75** by pinning `noodles-sam=0.52`, `noodles-bam=0.55`,
 `noodles-bgzf=0.26`, `indexmap=2.2.6`, `rayon=1.10`, `rayon-core=1.12.1`. A fully
-static binary builds with the `x86_64-unknown-linux-musl` target. The vendored
-**rustyomestats** exposes its pure stat kernels (`compute_nl`, codon counters)
-with no extra dependencies on 1.75; its `full` feature (codon-density / U50 /
-FragGeneScan via `polars` + `bio`) requires **rustc ≥ 1.85** and is built through
-the vendored crate, not cleaver.
+static binary builds with the `x86_64-unknown-linux-musl` target.
 
 ### ✅ Correctness
 
 `#![forbid(unsafe_code)]` on the core crate (the CLI's GPU launch is the only
 `unsafe`, behind `--features gpu`). Tests cover FASTA/FASTQ losslessness and
 boundary behaviour, SAM header replication, SAM↔BAM round-trips, BAM-chunk
-validity, FASTQ→FASTA, mapped/unmapped filtering and partitioning, and base
-composition / GC. End-to-end (verified here): all FASTA variants, FASTQ, gzip,
-and multi-file parallel split reassemble byte-identical; `--partition` routes
-every record by its `0x4` flag (6 mapped + 4 unmapped, lossless); and `stats`
-runs across files through the HydraMPP backend with devices pinned per task.
+validity, FASTQ→FASTA, mapped/unmapped filtering and partitioning, base
+composition / GC, **genome stats (N50/L50/N90, lengths, median)**, GTF/GFF
+parsing, CIGAR intron-splitting, and **count assignment** (unique / ambiguous /
+no-feature, strandedness, multimapper and MAPQ filters, and the union / strict /
+nonempty overlap modes). End-to-end (verified here): all FASTA variants, FASTQ,
+gzip, and multi-file parallel split reassemble byte-identical; `--partition`
+routes every record by its `0x4` flag (6 mapped + 4 unmapped, lossless); `stats`
+emits the genome table across files; and `count` produces an identical
+gene × sample matrix and `.summary` whether run on the in-node pool or across the
+HydraMPP backend with devices pinned per task.
 
 ---
 
