@@ -6,17 +6,11 @@
 //! All outputs are written as polars DataFrames (csv), ready for seaborn
 //! plotting via the Python driver.
 
-#[cfg(feature = "full")]
 use anyhow::Result;
-#[cfg(feature = "full")]
 use bio::io::fasta;
-#[cfg(feature = "full")]
 use polars::prelude::*;
-#[cfg(feature = "full")]
 use rayon::prelude::*;
-#[cfg(feature = "full")]
 use std::collections::HashMap;
-#[cfg(feature = "full")]
 use std::path::Path;
 
 /// Canonical 64 codons in AACG/ACGT lexicographic order.
@@ -97,7 +91,6 @@ pub fn count_codons_single_frame(seq: &[u8]) -> [u64; 64] {
 
 /// Write `codon_absolute.csv` (per-record × per-frame × 64 codons) and the
 /// aggregated `codon_absolute_aggregate.csv`.
-#[cfg(feature = "full")]
 pub fn compute_absolute_codon_density(
     records: &[fasta::Record],
     outdir: &Path,
@@ -152,7 +145,6 @@ pub fn compute_absolute_codon_density(
 /// Read FGS `.ffn` predicted ORFs and write `codon_predicted.csv` +
 /// `codon_predicted_aggregate.csv`. ORFs are assumed to start in their own
 /// frame +1 (this is how FragGeneScanRs writes them).
-#[cfg(feature = "full")]
 pub fn compute_predicted_codon_density(ffn_path: &Path, outdir: &Path) -> Result<()> {
     let reader = fasta::Reader::from_file(ffn_path)?;
     let records: Vec<fasta::Record> = reader.records().filter_map(|r| r.ok()).collect();
@@ -193,7 +185,6 @@ pub fn compute_predicted_codon_density(ffn_path: &Path, outdir: &Path) -> Result
     Ok(())
 }
 
-#[cfg(feature = "full")]
 fn write_aggregate<P: AsRef<Path>>(
     agg: &HashMap<&'static str, u64>,
     path: P,
@@ -220,7 +211,6 @@ fn write_aggregate<P: AsRef<Path>>(
 /// Join absolute and predicted aggregates and compute a per-codon enrichment
 /// (`density_predicted / density_absolute`). Values > 1 indicate codons
 /// overrepresented in coding regions relative to 6-frame background.
-#[cfg(feature = "full")]
 pub fn write_codon_comparison(outdir: &Path) -> Result<()> {
     let abs_path  = outdir.join("codon_absolute_aggregate.csv");
     let pred_path = outdir.join("codon_predicted_aggregate.csv");

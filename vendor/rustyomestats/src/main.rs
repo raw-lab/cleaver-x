@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use rustyomestats::{codon, fgs, io_utils, stats, u50};
+use rustyomestats::{codon, fgs, io_utils, stats, u50, visualization};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -127,8 +127,11 @@ fn run_genome(a: GenomeArgs) -> Result<()> {
         }
     }
 
+    match visualization::create_plots(&a.outdir, true) {
+        Ok(_) => {eprintln!("[genome] plots generated");}
+        Err(e) => {eprintln!("[genome] WARN: plot generation failed: {e:#}");}
+    }
     eprintln!("[genome] done. outputs in {:?}", a.outdir);
-    eprintln!("[genome] plot:  python scripts/plot_stats.py -d {:?}", a.outdir);
     Ok(())
 }
 
@@ -172,8 +175,11 @@ fn run_u50(a: U50Args) -> Result<()> {
     println!("  UG50= {:>10}   ULG50= {:>6}", res.ug50, res.ulg50);
     println!("  UG50% = {:.4} %", res.ug50_pct);
 
+    match visualization::create_plots(&a.outdir, true) {
+        Ok(_) => {eprintln!("[genome] plots generated");}
+        Err(e) => {eprintln!("[genome] WARN: plot generation failed: {e:#}");}
+    }
     eprintln!("\n[u50] outputs written to {:?}", a.outdir);
-    eprintln!("[u50] plot:  python scripts/plot_stats.py -d {:?}", a.outdir);
     Ok(())
 }
 

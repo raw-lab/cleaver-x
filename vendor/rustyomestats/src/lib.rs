@@ -1,17 +1,27 @@
 //! rustyomestats — genome statistics, codon density, and U50-family
 //! assembly metrics.
 //!
-//! The pure stat kernels ([`stats::compute_nl`], the codon counters in
-//! [`codon`], and the N-stat helpers in [`u50`]) build with no external deps on
-//! rustc 1.75. The file-I/O and CSV-output layers (polars/bio) and the
-//! standalone CLI are behind the `full` feature (rustc >= 1.85).
+//! Modules:
+//! * [`io_utils`] — FASTA discovery / loading
+//! * [`stats`]    — length / GC / N-L stats (polars output)
+//! * [`codon`]    — 6-frame translation + absolute/predicted codon density
+//! * [`fgs`]      — FragGeneScanRs subprocess wrapper for predicted ORFs
+//! * [`u50`]      — Castro et al. (2016) N50/U50 assembly metrics from a
+//!                  reference FASTA + mapped-contigs BED
+//!
+//! Vendored build note: the pure length/GC/N-L statistics in [`stats`]
+//! (`compute_nl`, `BasicStats`) compile with no external dependencies. The
+//! heavier functionality (everything below, plus the bio/polars/rayon paths in
+//! [`stats`]) is gated behind the `full` feature.
 
+#[cfg(feature = "full")]
 pub mod codon;
-pub mod stats;
-
 #[cfg(feature = "full")]
 pub mod fgs;
 #[cfg(feature = "full")]
 pub mod io_utils;
+pub mod stats;
 #[cfg(feature = "full")]
 pub mod u50;
+#[cfg(feature = "full")]
+pub mod visualization;
