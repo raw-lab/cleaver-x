@@ -47,31 +47,16 @@ impl GenomeStats {
     }
 }
 
-/// N/L statistics over sequence lengths sorted **descending**.
+/// N/L statistics over sequence lengths sorted **descending**, via the vendored
+/// `rustyomestats` crate (`rustyomestats::stats::compute_nl`).
 ///
 /// `nx[k]` is the length of the sequence at which the running total first
-/// reaches `frac[k]` of the sum; `lx[k]` is how many sequences that took.
+/// reaches `frac[k]` of the sum (N25/N50/N75/N90); `lx[k]` is how many
+/// sequences that took.
 fn compute_nl(lengths_desc: &[usize]) -> ([u64; 4], [u64; 4]) {
-    let fracs = [0.25_f64, 0.50, 0.75, 0.90];
-    let total: u64 = lengths_desc.iter().map(|&l| l as u64).sum();
-    let mut nx = [0u64; 4];
-    let mut lx = [0u64; 4];
-    if total == 0 {
-        return (nx, lx);
-    }
-    for (k, &f) in fracs.iter().enumerate() {
-        let target = total as f64 * f;
-        let mut cum = 0u64;
-        for (i, &len) in lengths_desc.iter().enumerate() {
-            cum += len as u64;
-            if cum as f64 >= target {
-                nx[k] = len as u64;
-                lx[k] = (i + 1) as u64;
-                break;
-            }
-        }
-    }
-    (nx, lx)
+    let (nx, lx) = rustyomestats::stats::compute_nl(lengths_desc);
+    let to_u64 = |a: [usize; 4]| [a[0] as u64, a[1] as u64, a[2] as u64, a[3] as u64];
+    (to_u64(nx), to_u64(lx))
 }
 
 #[inline]
