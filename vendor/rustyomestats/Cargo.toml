@@ -1,34 +1,52 @@
 [package]
-name         = "rustyomestats"
-version      = "0.2.0"
-edition      = "2021"
-# Pure stat kernels (compute_nl, codon counts, n_stat) build on 1.75.
-# The `full` feature (CLI + polars/bio CSV output + FragGeneScan) needs 1.85.
+name = "rustyomestats"
+version = "0.2.0"
+edition = "2021"
+# MSRV note: the lightweight default build (length / GC / N-L stats used by
+# cleaver) compiles on rustc 1.75. The `full` feature pulls bio/polars/plotters
+# and the CLI, which require a newer toolchain (upstream declares rust 1.88).
 rust-version = "1.75"
-authors      = ["Richard Allen White III <raw937@gmail.com>"]
-license      = "MIT"
-description  = "Fast genome statistics: length, GC, N/L, 6-frame and FragGeneScan codon density, plus Castro U50 assembly metrics."
-homepage     = "https://github.com/raw937/rustyomestats"
-repository   = "https://github.com/raw937/rustyomestats"
+license = "CC-BY-NC-4.0"
+description = "Fast genome statistics: length, GC, N/L, 6-frame and FragGeneScan codon density, plus Castro U50 assembly metrics. (Vendored; default build is dependency-free stats, `full` enables the complete crate.)"
+authors = ["Richard Allen White III <rwhit101@charlotte.edu>"]
+homepage = "https://github.com/raw-lab/rustyomestats"
+repository = "https://github.com/raw-lab/rustyomestats"
 
 [lib]
 name = "rustyomestats"
 path = "src/lib.rs"
 
+# The CLI binary needs the full dependency set; only built with `--features full`.
 [[bin]]
 name = "rustyomestats"
 path = "src/main.rs"
 required-features = ["full"]
 
 [dependencies]
-clap   = { version = "4",    features = ["derive"], optional = true }
-bio    = { version = "2.0",  optional = true }
+anyhow = { version = "1.0", optional = true }
+base64 = { version = "0.22", optional = true }
+bio = { version = "2.0", optional = true }
+chrono = { version = "0.4", optional = true }
+clap = { version = "=4.4.18", features = ["derive"], optional = true }  # pinned to the workspace clap (only used by the `full` feature)
+csv = { version = "1", optional = true }
+plotters = { version = "0.3", features = ["full_palette", "bitmap_backend"], optional = true }
 polars = { version = "0.46", features = ["lazy", "csv"], optional = true }
-rayon  = { version = "1.10", optional = true }
-anyhow = { version = "1.0",  optional = true }
+rayon = { version = "1.10", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 
 [features]
 default = []
-# Everything the standalone CLI needs (CSV output, FASTA I/O, codon density CSVs,
-# U50-from-BED, FragGeneScan ORF prediction). Requires rustc >= 1.85.
-full = ["dep:clap", "dep:bio", "dep:polars", "dep:rayon", "dep:anyhow"]
+# Complete upstream crate: CLI, codon/FGS density, U50 metrics, plotting,
+# polars CSV output. Requires a recent toolchain (rustc >= 1.88).
+full = [
+    "dep:anyhow",
+    "dep:base64",
+    "dep:bio",
+    "dep:chrono",
+    "dep:clap",
+    "dep:csv",
+    "dep:plotters",
+    "dep:polars",
+    "dep:rayon",
+    "dep:serde",
+]
