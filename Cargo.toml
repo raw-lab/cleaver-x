@@ -1,0 +1,23 @@
+[workspace]
+members = ["cleaver-core", "cleaver-cli", "vendor/hydra-mpp-core", "vendor/rustyomestats"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "CC-BY-NC-4.0"
+authors = ["RAW Lab <raw.lab@uncc.edu>"]
+repository = "https://github.com/raw-lab/cleaver"
+
+# HydraMPP isolates panicking tasks with catch_unwind, so the default release
+# profile keeps panic = "unwind" (a few KB larger, but one bad file can't abort
+# a worker). Use --profile release-tiny for the smallest static binary.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.release-tiny]
+inherits = "release"
+panic = "abort"
