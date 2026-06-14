@@ -15,6 +15,10 @@ noodles-bam = "=0.55.0"
 noodles-bgzf = "=0.26.0"
 # MSRV pin: newer indexmap requires Cargo edition2024 (unavailable on 1.75).
 indexmap = "=2.2.6"
+# Vendored rustyomestats: genome statistics (N/L assembly metrics). Default
+# build is dependency-free (no bio/polars); cleaver does NOT enable its `full`
+# feature, so the workspace still compiles on rustc 1.75.
+rustyomestats = { path = "../vendor/rustyomestats", default-features = false }
 
 [dependencies.flate2]
 version = "1"
