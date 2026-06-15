@@ -191,6 +191,61 @@ pub fn run() -> Result<()> {
         Ok("3 reads -> 1 assigned, 1 ambiguous, 1 no-feature".into())
     });
 
+    // ---- fastp (FASTQ preprocessing) ---------------------------------------
+    run("fastp (FASTQ QC)", &mut || {
+        let fq = tmp.join("d.fastq");
+        fs::write(
+            &fq,
+            b"@a\nACGTACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIIIIIII\n\
+              @b\nACGT\n+\nIIII\n\
+              @c\nACGTACGTACGTACGTACGT\n+\n####################\n",
+        )?;
+        let out = tmp.join("d.out.fastq");
+        let p = cleaver_core::fastp::FastpParams {
+            length_required: 10,
+            qualified_quality_phred: 20,
+            unqualified_percent_limit: 50.0,
+            ..Default::default()
+        };
+        let rep = cleaver_core::fastp::run_se(&fq, &out, &p)?;
+        if (rep.filter.passed, rep.filter.too_short, rep.filter.low_quality) != (1, 1, 1) {
+            return Err(anyhow!(
+                "expected 1 pass / 1 short / 1 low-qual, got {}/{}/{}",
+                rep.filter.passed,
+                rep.filter.too_short,
+                rep.filter.low_quality
+            ));
+        }
+        Ok("3 reads -> 1 pass, 1 too-short, 1 low-quality".into())
+    });
+
+    // ---- demux (ONT barcode demultiplexing) --------------------------------
+    run("demux (barcodes)", &mut || {
+        let bcf = tmp.join("bc.fasta");
+        fs::write(&bcf, b">bc01\nAAAACCCCGGGGTTTT\n>bc02\nTTTTGGGGCCCCAAAA\n")?;
+        let reads = tmp.join("dx.fastq");
+        fs::write(
+            &reads,
+            b"@r1\nAAAACCCCGGGGTTTTACGTACGTACGTAC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n\
+              @r2\nGTGTGTGTGTGTGTGTGTGTACGTACGTAC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n",
+        )?;
+        let bcs = cleaver_core::demux::read_barcodes(&bcf)?;
+        let p = cleaver_core::demux::DemuxParams {
+            both_ends: false,
+            min_score: 0.85,
+            ..Default::default()
+        };
+        let st = cleaver_core::demux::demux_file(&reads, &tmp.join("dx_out"), &bcs, &p)?;
+        if (st.classified, st.unclassified) != (1, 1) {
+            return Err(anyhow!(
+                "expected 1 classified / 1 unclassified, got {}/{}",
+                st.classified,
+                st.unclassified
+            ));
+        }
+        Ok("2 reads -> 1 barcoded (trimmed), 1 unclassified".into())
+    });
+
     // ---- format detection ---------------------------------------------------
     run("format detection", &mut || {
         let f1 = formats::detect(&fasta)?;

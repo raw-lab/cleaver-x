@@ -241,8 +241,14 @@ pub struct CountJob {
     pub min_mapq: u8,
     pub count_multimappers: bool,
     pub allow_multi_overlap: bool,
-    /// 0 = union, 1 = intersection-strict, 2 = intersection-nonempty.
+    /// VERSE assignment mode `-z`: 0/1 union, 2 strict, 3 nonempty,
+    /// 4 union-strict, 5 cover-length.
     pub mode: u8,
+    pub require_both_ends: bool,
+    pub exclude_chimeric: bool,
+    pub check_pe_dist: bool,
+    pub min_frag_len: u32,
+    pub max_frag_len: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +256,8 @@ pub struct CountOutcome {
     pub input: PathBuf,
     pub ok: bool,
     pub sample: String,
+    /// Feature type this matrix counts (for multi-type independent runs).
+    pub feature_type: String,
     /// Number of indexed feature lines (of the requested type).
     pub n_features: u64,
     /// Meta-feature ids in annotation first-seen order (shared across inputs).
@@ -261,76 +269,168 @@ pub struct CountOutcome {
     pub unmapped: u64,
     pub low_mapq: u64,
     pub multimapping: u64,
+    pub pe_filtered: u64,
     pub total: u64,
     pub error: String,
 }
 
-fn mode_from_u8(m: u8) -> annotation::Mode {
-    match m {
-        1 => annotation::Mode::IntersectionStrict,
-        2 => annotation::Mode::IntersectionNonempty,
-        _ => annotation::Mode::Union,
+fn mode_from_u8(z: u8) -> annotation::Mode {
+    match z {
+        2 => annotation::Mode::IntersectionStrict,
+        3 => annotation::Mode::IntersectionNonempty,
+        4 => annotation::Mode::UnionStrict,
+        5 => annotation::Mode::LargestOverlap,
+        _ => annotation::Mode::Union, // 0 (featureCounts) and 1 (htseq union)
     }
 }
 
-/// Count one alignment file against its annotation. Pure over `CountJob`: the
-/// annotation is (re)parsed here so the unit is self-contained on any worker.
+#[allow(clippy::too_many_arguments)]
+fn make_params(
+    stranded: u8,
+    min_mapq: u8,
+    count_multimappers: bool,
+    allow_multi_overlap: bool,
+    mode: u8,
+    require_both_ends: bool,
+    exclude_chimeric: bool,
+    check_pe_dist: bool,
+    min_frag_len: u32,
+    max_frag_len: u32,
+) -> count::CountParams {
+    count::CountParams {
+        stranded,
+        min_mapq,
+        count_multimappers,
+        allow_multi_overlap,
+        mode: mode_from_u8(mode),
+        primary_only: true,
+        require_both_ends,
+        exclude_chimeric,
+        check_pe_dist,
+        min_frag_len,
+        max_frag_len,
+    }
+}
+
+/// Count one alignment file against one feature type. Pure over `CountJob`.
 pub fn do_count(job: CountJob) -> CountOutcome {
-    let sample = job
-        .input
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("sample")
-        .to_string();
+    let sample = job.input.file_name().and_then(|s| s.to_str()).unwrap_or("sample").to_string();
+    let ftype = job.feature_type.clone();
     let run = || -> anyhow::Result<(Vec<String>, u64, count::FileCounts)> {
         let fmt = formats::detect(&job.input)?;
         if !fmt.is_alignment() {
             anyhow::bail!("count expects SAM/BAM input, got {}", fmt_name(fmt));
         }
         let ann = annotation::Annotation::from_path(&job.annotation, &job.feature_type, &job.group_by)?;
-        let params = count::CountParams {
-            stranded: job.stranded,
-            min_mapq: job.min_mapq,
-            count_multimappers: job.count_multimappers,
-            allow_multi_overlap: job.allow_multi_overlap,
-            mode: mode_from_u8(job.mode),
-            primary_only: true,
-        };
+        let params = make_params(
+            job.stranded, job.min_mapq, job.count_multimappers, job.allow_multi_overlap, job.mode,
+            job.require_both_ends, job.exclude_chimeric, job.check_pe_dist, job.min_frag_len, job.max_frag_len,
+        );
         let fc = count::count_file(&job.input, fmt, &ann, &params)?;
         Ok((ann.gene_ids().to_vec(), ann.n_features, fc))
     };
     match run() {
         Ok((gene_ids, n_features, fc)) => CountOutcome {
-            input: job.input,
-            ok: true,
-            sample,
-            n_features,
-            gene_ids,
-            counts: fc.counts,
-            assigned: fc.assigned,
-            no_feature: fc.no_feature,
-            ambiguous: fc.ambiguous,
-            unmapped: fc.unmapped,
-            low_mapq: fc.low_mapq,
-            multimapping: fc.multimapping,
-            total: fc.total,
-            error: String::new(),
+            input: job.input, ok: true, sample, feature_type: ftype, n_features, gene_ids,
+            counts: fc.counts, assigned: fc.assigned, no_feature: fc.no_feature, ambiguous: fc.ambiguous,
+            unmapped: fc.unmapped, low_mapq: fc.low_mapq, multimapping: fc.multimapping, pe_filtered: fc.pe_filtered,
+            total: fc.total, error: String::new(),
         },
         Err(e) => CountOutcome {
-            input: job.input,
-            ok: false,
-            sample,
-            n_features: 0,
-            gene_ids: Vec::new(),
-            counts: Vec::new(),
-            assigned: 0,
-            no_feature: 0,
-            ambiguous: 0,
-            unmapped: 0,
-            low_mapq: 0,
-            multimapping: 0,
-            total: 0,
-            error: format!("{e:#}"),
+            input: job.input, ok: false, sample, feature_type: ftype, n_features: 0, gene_ids: Vec::new(),
+            counts: Vec::new(), assigned: 0, no_feature: 0, ambiguous: 0, unmapped: 0, low_mapq: 0,
+            multimapping: 0, pe_filtered: 0, total: 0, error: format!("{e:#}"),
+        },
+    }
+}
+
+// ---- hierarchical multi-feature-type assignment (VERSE) --------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HierJob {
+    pub input: PathBuf,
+    pub annotation: PathBuf,
+    pub feature_types: Vec<String>,
+    pub group_by: String,
+    pub stranded: u8,
+    pub min_mapq: u8,
+    pub count_multimappers: bool,
+    pub allow_multi_overlap: bool,
+    pub mode: u8,
+    pub require_both_ends: bool,
+    pub exclude_chimeric: bool,
+    pub check_pe_dist: bool,
+    pub min_frag_len: u32,
+    pub max_frag_len: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeCounts {
+    pub feature_type: String,
+    pub gene_ids: Vec<String>,
+    pub counts: Vec<u64>,
+    pub assigned: u64,
+    pub n_features: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HierOutcome {
+    pub input: PathBuf,
+    pub ok: bool,
+    pub sample: String,
+    pub per_type: Vec<TypeCounts>,
+    pub no_feature: u64,
+    pub ambiguous: u64,
+    pub unmapped: u64,
+    pub low_mapq: u64,
+    pub multimapping: u64,
+    pub pe_filtered: u64,
+    pub total: u64,
+    pub error: String,
+}
+
+/// Hierarchical assignment of one file across feature types in priority order.
+pub fn do_count_hier(job: HierJob) -> HierOutcome {
+    let sample = job.input.file_name().and_then(|s| s.to_str()).unwrap_or("sample").to_string();
+    let run = || -> anyhow::Result<(Vec<TypeCounts>, count::HierCounts)> {
+        let fmt = formats::detect(&job.input)?;
+        if !fmt.is_alignment() {
+            anyhow::bail!("count expects SAM/BAM input, got {}", fmt_name(fmt));
+        }
+        let mut anns = Vec::with_capacity(job.feature_types.len());
+        for ft in &job.feature_types {
+            anns.push(annotation::Annotation::from_path(&job.annotation, ft, &job.group_by)?);
+        }
+        let params = make_params(
+            job.stranded, job.min_mapq, job.count_multimappers, job.allow_multi_overlap, job.mode,
+            job.require_both_ends, job.exclude_chimeric, job.check_pe_dist, job.min_frag_len, job.max_frag_len,
+        );
+        let hc = count::count_file_hier(&job.input, fmt, &anns, &params)?;
+        let per_type = job
+            .feature_types
+            .iter()
+            .enumerate()
+            .map(|(i, ft)| TypeCounts {
+                feature_type: ft.clone(),
+                gene_ids: anns[i].gene_ids().to_vec(),
+                counts: hc.per_type[i].clone(),
+                assigned: hc.assigned_per_type[i],
+                n_features: anns[i].n_features,
+            })
+            .collect();
+        Ok((per_type, hc))
+    };
+    match run() {
+        Ok((per_type, hc)) => HierOutcome {
+            input: job.input, ok: true, sample, per_type,
+            no_feature: hc.no_feature, ambiguous: hc.ambiguous, unmapped: hc.unmapped,
+            low_mapq: hc.low_mapq, multimapping: hc.multimapping, pe_filtered: hc.pe_filtered,
+            total: hc.total, error: String::new(),
+        },
+        Err(e) => HierOutcome {
+            input: job.input, ok: false, sample, per_type: Vec::new(),
+            no_feature: 0, ambiguous: 0, unmapped: 0, low_mapq: 0, multimapping: 0, pe_filtered: 0,
+            total: 0, error: format!("{e:#}"),
         },
     }
 }
