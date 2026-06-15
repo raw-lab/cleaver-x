@@ -661,3 +661,28 @@ MSRV):
 
 Creative Commons Attribution-NonCommercial 4.0 International (**CC-BY-NC-4.0**).
 Free for academic and non-commercial use; contact the author for commercial use.
+
+# 🤝 Contributing
+
+We welcome:
+
+* 🧵 Scheduling / parallelism improvements
+* 🎮 GPU kernel work and validation on real hardware
+* 🖥️ GUI features and polish
+* 🧪 Tests and benchmarks
+* 📄 Documentation
+
+Pull requests and issues are encouraged.
+
+---
+
+# 📞 Support
+
+* 🐛 **Issues:** [Cleaver Issues](https://github.com/raw-lab/cleaver/issues)
+* 📧 **Contact:**
+  * [Dr. Richard Allen White III](mailto:rwhit101@charlotte.edu)
+  * [Jose Luis Figueroa III](mailto:jlfiguer@charlotte.edu)
+
+  If you have any questions or feedback, please feel free to get in touch by email.
+
+---
