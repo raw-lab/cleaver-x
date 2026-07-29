@@ -6,7 +6,7 @@ resolver = "2"
 version = "1.0.1"
 edition = "2026"
 license = "CC-BY-NC-4.0"
-authors = ["RAW Lab <raw.lab@uncc.edu>"]
+authors = ["RAW Lab <rwhit101@charlotte.edu>"]
 repository = "https://github.com/raw-lab/cleaver"
 
 # HydraMPP isolates panicking tasks with catch_unwind, so the default release
