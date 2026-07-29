@@ -33,6 +33,12 @@ pub enum Mode {
     IntersectionStrict,
     /// As strict, but bases covered by no feature are ignored.
     IntersectionNonempty,
+    /// VERSE union-strict (`-z 4`): the union of overlapping features must map
+    /// to exactly one meta-feature *and* cover every base of the read.
+    UnionStrict,
+    /// VERSE cover-length (`-z 5`): assign to the meta-feature with the largest
+    /// total overlap; ambiguous only on an exact tie.
+    LargestOverlap,
 }
 
 struct Feat {
@@ -234,6 +240,20 @@ impl Annotation {
                 g
             }
             Mode::IntersectionStrict | Mode::IntersectionNonempty => sweep(blocks, &cand, mode),
+            Mode::UnionStrict => {
+                let mut g: Vec<u32> = cand.iter().map(|c| c.2).collect();
+                g.sort_unstable();
+                g.dedup();
+                if g.len() != 1 {
+                    return g; // >1 -> ambiguous (cand is non-empty so never 0 here)
+                }
+                if read_fully_covered(blocks, &cand) {
+                    g
+                } else {
+                    Vec::new() // unique gene but read not fully covered -> no feature
+                }
+            }
+            Mode::LargestOverlap => largest_overlap_gene(blocks, &cand),
         }
     }
 }
@@ -272,7 +292,63 @@ fn intersect(a: &[u32], b: &[u32]) -> Vec<u32> {
     out
 }
 
-/// Per-base intersection sweep for the strict / nonempty modes. Segments tile
+/// True when every base of every read block is covered by at least one candidate
+/// feature (used by union-strict).
+fn read_fully_covered(blocks: &[(u64, u64)], cand: &[(u64, u64, u32)]) -> bool {
+    for &(bs, be) in blocks {
+        let mut ivs: Vec<(u64, u64)> = cand
+            .iter()
+            .filter_map(|&(fs, fe, _)| {
+                let s = fs.max(bs);
+                let e = fe.min(be);
+                if s <= e {
+                    Some((s, e))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        ivs.sort_unstable();
+        let mut cur = bs;
+        for (s, e) in ivs {
+            if s > cur {
+                return false; // gap before this interval
+            }
+            if e + 1 > cur {
+                cur = e + 1;
+            }
+        }
+        if cur <= be {
+            return false;
+        }
+    }
+    true
+}
+
+/// Meta-feature(s) with the largest total overlap with the read (cover-length).
+fn largest_overlap_gene(blocks: &[(u64, u64)], cand: &[(u64, u64, u32)]) -> Vec<u32> {
+    let mut ov: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    for &(fs, fe, g) in cand {
+        let mut sum = 0u64;
+        for &(bs, be) in blocks {
+            let s = fs.max(bs);
+            let e = fe.min(be);
+            if s <= e {
+                sum += e - s + 1;
+            }
+        }
+        *ov.entry(g).or_insert(0) += sum;
+    }
+    let max = ov.values().copied().max().unwrap_or(0);
+    if max == 0 {
+        return Vec::new();
+    }
+    let mut best: Vec<u32> = ov.iter().filter(|(_, &v)| v == max).map(|(&g, _)| g).collect();
+    best.sort_unstable();
+    best
+}
+
+
 /// each read block at feature boundaries; the gene set of a segment is the set
 /// of meta-features whose feature fully covers it.
 fn sweep(blocks: &[(u64, u64)], cand: &[(u64, u64, u32)], mode: Mode) -> Vec<u32> {

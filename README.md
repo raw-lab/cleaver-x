@@ -563,6 +563,35 @@ for a fair comparison, so no timing numbers are claimed for them.
 
 ---
 
+## 🐞 Bug audit ("find any bugs")
+
+Found and fixed while building this:
+
+1. **Duplicate `noodles-sam` in the dependency tree** — pinning `noodles-sam 0.50`
+   while `noodles-bam 0.55` requires `0.52` put *two* copies of the crate in the
+   graph, so `alignment::io::Write` and `RecordBuf: Record` came from different
+   crates and didn't match (`finish`/`write_alignment_record` "not satisfied").
+   Fixed by aligning to `0.52`.
+2. **Silent MSRV walls** — `indexmap 2.14` and `rayon-core 1.13` require
+   edition2024 / rustc ≥ 1.80. Pinned to `2.2.6` and `1.12.1`.
+3. **Wrong unit-test expectation in the base counter** — the FASTA `stats` test
+   asserted `C:4 / total:15 / GC:7÷13` for input `ACGT|AACC|GGTTNN`, which
+   actually has `C:3 / total:14 / GC:0.5`; the kernel was right, the test was
+   miscounted. Corrected the expectation (caught by running the suite, not by
+   eye).
+
+Verified correct, no bug: the FASTA engine is byte-identical to the Python
+original; BAM chunks re-read as valid BAM with record counts summing exactly
+(50k and 300k runs); SAM chunks each carry the header.
+
+Honest sharp edges: a wrong/never-matching delimiter yields one giant chunk
+(mitigated by the start-of-line default); memory scales with the longest *line*,
+not the file; `--contains` is an O(n·m) scan; and two inputs sharing a stem
+(e.g. `x.ffn` and `x.ffn.gz`) write the same chunk names into one `-o` dir —
+split same-stem inputs separately.
+
+---
+
 ## 🔧 Build
 
 ```bash
@@ -608,81 +637,14 @@ HydraMPP backend with devices pinned per task.
 }
 ```
 
-## 🔗 References & dependencies
-
-Cleaver re-implements several established tools and stands on a small set of
-Rust crates. Everything below is gathered here so the attributions live in one
-place.
-
-**Re-implemented tools & algorithms.** These are independent pure-Rust
-re-implementations (not shell-outs); please cite the original tools when their
-algorithms are used.
-
-| Tool | Used by | Reference |
-|---|---|---|
-| **featureCounts** (Subread) | `cleaver count` (assignment, `-z 0`) | Liao, Smyth & Shi, *Bioinformatics* 2014 · <https://subread.sourceforge.net> |
-| **htseq-count** (HTSeq) | `cleaver count` (`union`/`strict`/`nonempty`, `-z 1–3`) | Anders, Pyl & Huber, *Bioinformatics* 2015 · <https://htseq.readthedocs.io> |
-| **VERSE** | `cleaver count` (`-z 4/5`, multi-feature hierarchical/independent) | Zhu, Fisher & Kim, *F1000Research* 2016 · <https://github.com/qinzhu/VERSE> |
-| **fastp** | `cleaver fastp` (trim/filter/overlap-correct, JSON report) | Chen, Zhou, Chen & Gu, *Bioinformatics* 2018 · <https://github.com/OpenGene/fastp> |
-| **barbell** | `cleaver demux` (ONT barcode fit-align + trim + split) | R. Beeloo et al. · <https://github.com/rickbeeloo/barbell> · <https://crates.io/crates/barbell> |
-
-**Tools named for comparison** (referenced in the benchmarks; not bundled and,
-where not pure-Rust/not reachable in-sandbox, not benchmarked here):
-
-| Tool | Reference |
-|---|---|
-| **samtools / htslib** | <https://www.htslib.org> |
-| **SeqKit** | Shen, Le, Li & Hu, *PLoS ONE* 2016 · <https://bioinf.shenwei.me/seqkit> |
-| **GNU coreutils** `split` | <https://www.gnu.org/software/coreutils> |
-
-**Bundled (vendored in-tree).** Shipped inside the workspace and built from
-source — no external fetch:
-
-| Crate | Role | Location |
-|---|---|---|
-| **HydraMPP** (`hydra-mpp-core`) | cross-node distribution (`--features hydra`); collaboration with J. L. Figueroa III | `vendor/hydra-mpp-core` |
-| **rustyomestats** | genome N/L assembly statistics for `cleaver stats` | `vendor/rustyomestats` |
-
-**Rust crate dependencies** (from crates.io; versions pinned for the rustc-1.75
-MSRV):
-
-| Crate | Version | Role |
-|---|---|---|
-| [`noodles`](https://github.com/zaeleus/noodles) (`-sam`/`-bam`/`-bgzf`) | `=0.52` / `=0.55` / `=0.26` | pure-Rust htslib equivalent — SAM/BAM/BGZF I/O |
-| [`rayon`](https://github.com/rayon-rs/rayon) / `rayon-core` | `=1.10.0` / `=1.12.1` | in-node work-stealing (one task per file) |
-| [`clap`](https://github.com/clap-rs/clap) | `=4.4.18` | command-line parsing (derive) |
-| [`serde`](https://serde.rs) | `1` | job/outcome serialization for the HydraMPP backend |
-| [`anyhow`](https://github.com/dtolnay/anyhow) | `1` | error handling |
-| [`indexmap`](https://github.com/indexmap-rs/indexmap) | `=2.2.6` | ordered meta-feature indexing |
-| [`flate2`](https://github.com/rust-lang/flate2-rs) | (feature `gzip`, default-on) | transparent gzip I/O, pure-Rust `miniz_oxide` backend |
-| [`cudarc`](https://github.com/coreylowman/cudarc) | `0.12` (feature `gpu`, optional) | NVIDIA CUDA base-composition kernel for `stats` |
+**Re-implemented tools.** Cleaver's `count` modes follow **featureCounts**
+(Liao, Smyth & Shi), **htseq-count** (Anders, Pyl & Huber), and **VERSE** (Zhu,
+Fisher & Kim); `cleaver fastp` re-implements **fastp** (Chen, Zhou, Chen & Gu);
+`cleaver demux` re-implements the approach of **barbell** (Beeloo et al.). These
+are independent pure-Rust re-implementations; please cite the original tools when
+their algorithms are used.
 
 ## 📄 License
 
 Creative Commons Attribution-NonCommercial 4.0 International (**CC-BY-NC-4.0**).
 Free for academic and non-commercial use; contact the author for commercial use.
-
-# 🤝 Contributing
-
-We welcome:
-
-* 🧵 Scheduling / parallelism improvements
-* 🎮 GPU kernel work and validation on real hardware
-* 🖥️ GUI features and polish
-* 🧪 Tests and benchmarks
-* 📄 Documentation
-
-Pull requests and issues are encouraged.
-
----
-
-# 📞 Support
-
-* 🐛 **Issues:** [Cleaver Issues](https://github.com/raw-lab/cleaver/issues)
-* 📧 **Contact:**
-  * [Dr. Richard Allen White III](mailto:rwhit101@charlotte.edu)
-  * [Jose Luis Figueroa III](mailto:jlfiguer@charlotte.edu)
-
-  If you have any questions or feedback, please feel free to get in touch by email.
-
----

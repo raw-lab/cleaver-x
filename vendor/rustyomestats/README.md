@@ -459,7 +459,7 @@ Pull requests and issues are encouraged.
 # 📞 Support
 
 * 🐛 GitHub Issues:
-  - **Issues:** [RustyOmeStats Issues](https://github.com/raw-lab/rustyomestats/issues)
+  - **Issues:** [RustyOmeStats Issues](https://github.com/raw937/rustyomestats/issues)
 
 * 📧 Contact:
   - **Email:** [Dr. Richard Allen White III](mailto:rwhit101@uncc.edu)

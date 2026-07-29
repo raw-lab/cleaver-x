@@ -3,8 +3,8 @@ members = ["cleaver-core", "cleaver-cli", "vendor/hydra-mpp-core", "vendor/rusty
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
-edition = "2021"
+version = "1.0.1"
+edition = "2026"
 license = "CC-BY-NC-4.0"
 authors = ["RAW Lab <raw.lab@uncc.edu>"]
 repository = "https://github.com/raw-lab/cleaver"

@@ -36,6 +36,15 @@ pub struct CountParams {
     pub mode: Mode,
     /// Skip secondary/supplementary alignments (recommended).
     pub primary_only: bool,
+    /// PE: require both ends mapped — skip a read whose mate is unmapped (`-B`).
+    pub require_both_ends: bool,
+    /// PE: exclude chimeric reads (supplementary, or mate on a different
+    /// reference) (`-C`).
+    pub exclude_chimeric: bool,
+    /// PE: only count fragments whose |TLEN| is within [min,max] (`-P`).
+    pub check_pe_dist: bool,
+    pub min_frag_len: u32, // -d
+    pub max_frag_len: u32, // -D
 }
 
 impl Default for CountParams {
@@ -47,6 +56,11 @@ impl Default for CountParams {
             allow_multi_overlap: false,
             mode: Mode::Union,
             primary_only: true,
+            require_both_ends: false,
+            exclude_chimeric: false,
+            check_pe_dist: false,
+            min_frag_len: 50,
+            max_frag_len: 600,
         }
     }
 }
@@ -61,6 +75,7 @@ pub struct FileCounts {
     pub unmapped: u64,
     pub low_mapq: u64,
     pub multimapping: u64,
+    pub pe_filtered: u64,
     pub total: u64,
 }
 
@@ -74,6 +89,7 @@ impl FileCounts {
             unmapped: 0,
             low_mapq: 0,
             multimapping: 0,
+            pe_filtered: 0,
             total: 0,
         }
     }
@@ -86,12 +102,13 @@ impl FileCounts {
     }
 }
 
-enum Class {
+enum Pre {
     Unmapped,
     LowMapq,
     Multi,
-    /// Distinct meta-feature ids the read overlaps (0/1/many handled by caller).
-    Assign(Vec<u32>),
+    PeFiltered,
+    /// Passed all read-level filters; carries the data needed to assign.
+    Ok { name: String, blocks: Vec<(u64, u64)>, strand: Strand },
 }
 
 /// Covered reference intervals (1-based inclusive). `M/=/X/D` extend the current
@@ -139,47 +156,89 @@ fn nh_tag(d: &Data) -> Option<i64> {
     }
 }
 
-fn classify(rec: &RecordBuf, header: &Header, ann: &Annotation, p: &CountParams) -> Class {
+/// Read-level filtering, independent of any annotation. Returns the read's
+/// reference name, covered blocks, and strand when it passes.
+fn prefilter(rec: &RecordBuf, header: &Header, p: &CountParams) -> Pre {
     let flags = rec.flags();
     if p.primary_only && (flags.is_secondary() || flags.is_supplementary()) {
-        return Class::Multi;
+        return Pre::Multi;
+    }
+    if p.exclude_chimeric && flags.is_supplementary() {
+        return Pre::PeFiltered;
     }
     if flags.is_unmapped() {
-        return Class::Unmapped;
+        return Pre::Unmapped;
+    }
+    // Paired-end filters (only meaningful for segmented reads).
+    if flags.is_segmented() {
+        if p.require_both_ends && flags.is_mate_unmapped() {
+            return Pre::PeFiltered;
+        }
+        if p.exclude_chimeric {
+            if let (Some(a), Some(b)) = (rec.reference_sequence_id(), rec.mate_reference_sequence_id()) {
+                if a != b {
+                    return Pre::PeFiltered;
+                }
+            }
+        }
+        if p.check_pe_dist {
+            let tlen = rec.template_length().unsigned_abs();
+            if tlen != 0 && (tlen < p.min_frag_len || tlen > p.max_frag_len) {
+                return Pre::PeFiltered;
+            }
+        }
     }
     let mapq = rec.mapping_quality().map(|m| m.get()).unwrap_or(0);
     if (mapq as u16) < p.min_mapq as u16 {
-        return Class::LowMapq;
+        return Pre::LowMapq;
     }
     if !p.count_multimappers {
         if let Some(nh) = nh_tag(rec.data()) {
             if nh > 1 {
-                return Class::Multi;
+                return Pre::Multi;
             }
         }
     }
     let rid = match rec.reference_sequence_id() {
         Some(i) => i,
-        None => return Class::Unmapped,
+        None => return Pre::Unmapped,
     };
     let name: &[u8] = match header.reference_sequences().get_index(rid) {
         Some((n, _)) => n.as_ref(),
-        None => return Class::Assign(Vec::new()),
+        None => return Pre::Ok { name: String::new(), blocks: Vec::new(), strand: Strand::Fwd },
     };
     let name = match std::str::from_utf8(name) {
-        Ok(s) => s,
-        Err(_) => return Class::Assign(Vec::new()),
+        Ok(s) => s.to_string(),
+        Err(_) => return Pre::Ok { name: String::new(), blocks: Vec::new(), strand: Strand::Fwd },
     };
     let start = match rec.alignment_start() {
         Some(pos) => pos.get() as u64,
-        None => return Class::Unmapped,
+        None => return Pre::Unmapped,
     };
     let blocks = ref_blocks(start, rec.cigar().as_ref());
-    if blocks.is_empty() {
-        return Class::Assign(Vec::new());
+    let strand = if flags.is_reverse_complemented() { Strand::Rev } else { Strand::Fwd };
+    Pre::Ok { name, blocks, strand }
+}
+
+/// Fold a distinct-gene assignment into a [`FileCounts`].
+fn tally_assignment(fc: &mut FileCounts, genes: &[u32], allow_multi: bool) {
+    match genes.len() {
+        0 => fc.no_feature += 1,
+        1 => {
+            fc.assigned += 1;
+            fc.counts[genes[0] as usize] += 1;
+        }
+        _ => {
+            if allow_multi {
+                fc.assigned += 1;
+                for &g in genes {
+                    fc.counts[g as usize] += 1;
+                }
+            } else {
+                fc.ambiguous += 1;
+            }
+        }
     }
-    let read_strand = if flags.is_reverse_complemented() { Strand::Rev } else { Strand::Fwd };
-    Class::Assign(ann.assign(name, &blocks, read_strand, p.stranded, p.mode))
 }
 
 /// Count one SAM/BAM file against `ann`.
@@ -193,27 +252,19 @@ pub fn count_file(path: &Path, fmt: Format, ann: &Annotation, params: &CountPara
             for result in $r.record_bufs(&header) {
                 let rec = result.context("reading alignment record")?;
                 fc.total += 1;
-                match classify(&rec, &header, ann, params) {
-                    Class::Unmapped => fc.unmapped += 1,
-                    Class::LowMapq => fc.low_mapq += 1,
-                    Class::Multi => fc.multimapping += 1,
-                    Class::Assign(genes) => match genes.len() {
-                        0 => fc.no_feature += 1,
-                        1 => {
-                            fc.assigned += 1;
-                            fc.counts[genes[0] as usize] += 1;
+                match prefilter(&rec, &header, params) {
+                    Pre::Unmapped => fc.unmapped += 1,
+                    Pre::LowMapq => fc.low_mapq += 1,
+                    Pre::Multi => fc.multimapping += 1,
+                    Pre::PeFiltered => fc.pe_filtered += 1,
+                    Pre::Ok { name, blocks, strand } => {
+                        if blocks.is_empty() {
+                            fc.no_feature += 1;
+                        } else {
+                            let genes = ann.assign(&name, &blocks, strand, params.stranded, params.mode);
+                            tally_assignment(&mut fc, &genes, params.allow_multi_overlap);
                         }
-                        _ => {
-                            if params.allow_multi_overlap {
-                                fc.assigned += 1;
-                                for g in genes {
-                                    fc.counts[g as usize] += 1;
-                                }
-                            } else {
-                                fc.ambiguous += 1;
-                            }
-                        }
-                    },
+                    }
                 }
             }
         }};
@@ -223,6 +274,105 @@ pub fn count_file(path: &Path, fmt: Format, ann: &Annotation, params: &CountPara
         AlignReader::Bam(r) => go!(r),
     }
     Ok(fc)
+}
+
+/// Hierarchical multi-feature-type counting (VERSE `-t a;b;c` priority order):
+/// each read is assigned to the first feature type that yields a unique
+/// meta-feature. Returns per-type gene counts plus a shared summary.
+#[derive(Debug, Clone)]
+pub struct HierCounts {
+    /// One gene-count vector per annotation, in priority order.
+    pub per_type: Vec<Vec<u64>>,
+    /// Reads uniquely assigned at each level.
+    pub assigned_per_type: Vec<u64>,
+    pub no_feature: u64,
+    pub ambiguous: u64,
+    pub unmapped: u64,
+    pub low_mapq: u64,
+    pub multimapping: u64,
+    pub pe_filtered: u64,
+    pub total: u64,
+}
+
+pub fn count_file_hier(
+    path: &Path,
+    fmt: Format,
+    anns: &[Annotation],
+    params: &CountParams,
+) -> Result<HierCounts> {
+    let mut reader = align::open_align_reader(path, fmt)?;
+    let header = align::read_align_header(&mut reader)?;
+    let mut hc = HierCounts {
+        per_type: anns.iter().map(|a| vec![0u64; a.n_genes()]).collect(),
+        assigned_per_type: vec![0u64; anns.len()],
+        no_feature: 0,
+        ambiguous: 0,
+        unmapped: 0,
+        low_mapq: 0,
+        multimapping: 0,
+        pe_filtered: 0,
+        total: 0,
+    };
+
+    macro_rules! go {
+        ($r:expr) => {{
+            for result in $r.record_bufs(&header) {
+                let rec = result.context("reading alignment record")?;
+                hc.total += 1;
+                match prefilter(&rec, &header, params) {
+                    Pre::Unmapped => hc.unmapped += 1,
+                    Pre::LowMapq => hc.low_mapq += 1,
+                    Pre::Multi => hc.multimapping += 1,
+                    Pre::PeFiltered => hc.pe_filtered += 1,
+                    Pre::Ok { name, blocks, strand } => {
+                        if blocks.is_empty() {
+                            hc.no_feature += 1;
+                            continue;
+                        }
+                        // try each feature type in priority order
+                        let mut placed = false;
+                        let mut saw_ambiguous = false;
+                        for (i, ann) in anns.iter().enumerate() {
+                            let genes = ann.assign(&name, &blocks, strand, params.stranded, params.mode);
+                            match genes.len() {
+                                0 => {}
+                                1 => {
+                                    hc.assigned_per_type[i] += 1;
+                                    hc.per_type[i][genes[0] as usize] += 1;
+                                    placed = true;
+                                    break;
+                                }
+                                _ => {
+                                    if params.allow_multi_overlap {
+                                        hc.assigned_per_type[i] += 1;
+                                        for g in genes {
+                                            hc.per_type[i][g as usize] += 1;
+                                        }
+                                        placed = true;
+                                        break;
+                                    } else {
+                                        saw_ambiguous = true;
+                                    }
+                                }
+                            }
+                        }
+                        if !placed {
+                            if saw_ambiguous {
+                                hc.ambiguous += 1;
+                            } else {
+                                hc.no_feature += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }};
+    }
+    match &mut reader {
+        AlignReader::Sam(r) => go!(r),
+        AlignReader::Bam(r) => go!(r),
+    }
+    Ok(hc)
 }
 
 #[cfg(test)]

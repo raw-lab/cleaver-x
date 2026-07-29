@@ -346,7 +346,6 @@ pub fn convert(input: &Path, output: &Path, filter: MapFilter) -> Result<(u64, &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("cleaver-align-{tag}-{}", std::process::id()));

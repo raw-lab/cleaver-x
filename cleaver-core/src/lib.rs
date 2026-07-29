@@ -27,6 +27,8 @@ pub mod align;
 pub mod annotation;
 pub mod compute;
 pub mod count;
+pub mod fastp;
+pub mod demux;
 pub mod formats;
 pub mod genome;
 pub mod stats;
