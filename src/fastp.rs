@@ -446,21 +446,18 @@ fn trim_adapter(r: &mut Fq, adapter: &[u8]) -> usize {
     if alen == 0 || slen == 0 {
         return 0;
     }
-    // try every start position; require at least a short overlap.
-    let min_overlap = 4usize.min(alen).min(slen);
+    // Mirrors fastp's AdapterTrimmer::trimBySequence exactly: the scan stops
+    // `matchReq` bases before the end (so the shortest compared overlap is
+    // matchReq+1 = 5 for a normal adapter), and the number of tolerated
+    // mismatches is `cmplen / 8` — NOT a percentage. Using a looser rule here
+    // trims a few extra 3' bases that fastp keeps.
+    let match_req = 4usize.min(alen);
     let mut found: Option<usize> = None;
     let mut pos = 0usize;
-    while pos < slen {
+    while pos + match_req < slen {
         let overlap = (slen - pos).min(alen);
-        if overlap < min_overlap && pos + min_overlap <= slen {
-            pos += 1;
-            continue;
-        }
-        if overlap < min_overlap {
-            break;
-        }
         let mut mism = 0usize;
-        let allowed = (overlap as f64 * 0.2).floor() as usize;
+        let allowed = overlap / 8;
         let mut ok = true;
         for k in 0..overlap {
             if r.seq[pos + k].to_ascii_uppercase() != adapter[k].to_ascii_uppercase() {
@@ -779,7 +776,18 @@ pub fn run_pe(
         let b = fr2.next_record()?;
         let (mut x, mut y) = match (a, b) {
             (Some(x), Some(y)) => (x, y),
-            _ => break,
+            (None, None) => break,
+            // one mate file ran out before the other: pairing stays correct up
+            // to here, but the extra reads would be dropped — warn rather than
+            // silently discard them
+            (Some(_), None) | (None, Some(_)) => {
+                eprintln!(
+                    "warning: read1 and read2 have different numbers of records; \
+                     stopped at the shorter file after {} pairs",
+                    rep.before.reads / 2
+                );
+                break;
+            }
         };
         if params.reads_to_process > 0 && rep.before.reads / 2 >= params.reads_to_process {
             break;
@@ -905,6 +913,26 @@ mod tests {
     }
 
     #[test]
+    fn pe_unequal_counts_stops_at_shorter() {
+        // R1 has 3 records, R2 has 2: pairing must stay correct, the extra R1
+        // read is dropped (with a warning), and run_pe must not error/panic.
+        let d = std::env::temp_dir().join(format!("cleaver_pe_uneq_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let rec = |n: &str| format!("@{n}\nACGTACGTACGTACGTACGTACGTACGTAC\n+\n{}\n", "I".repeat(30));
+        let r1 = d.join("r1.fq");
+        let r2 = d.join("r2.fq");
+        std::fs::write(&r1, format!("{}{}{}", rec("a"), rec("b"), rec("c"))).unwrap();
+        std::fs::write(&r2, format!("{}{}", rec("a"), rec("b"))).unwrap();
+        let (o1, o2) = (d.join("o1.fq"), d.join("o2.fq"));
+        let p = FastpParams { length_required: 0, disable_adapter: true, ..Default::default() };
+        let rep = run_pe(&r1, &o1, &r2, &o2, &p).expect("unequal PE must not error");
+        let n = |pth: &Path| std::fs::read_to_string(pth).unwrap().lines().filter(|l| l.starts_with('@')).count();
+        assert_eq!(n(&o1), 2, "R1 out should stop at the shorter file");
+        assert_eq!(n(&o2), 2, "R2 out should stop at the shorter file");
+        assert_eq!(rep.before.reads, 4, "only the 2 complete pairs are counted");
+    }
+
+    #[test]
     fn n_base_and_complexity_filters() {
         let p = FastpParams { n_base_limit: 3, disable_length_filtering: true, ..Default::default() };
         assert!(matches!(filter_one(&fq("ACGTNNNNNA", "IIIIIIIIII"), &p), FilterVerdict::TooManyN));
@@ -923,5 +951,69 @@ mod tests {
         let ov = analyze_overlap(&s1, &s2rc, &p).expect("overlap found");
         assert_eq!(ov.overlap_len, 32);
         assert_eq!(ov.diff, 0);
+    }
+
+    #[test]
+    fn edge_reads_all_filtered_no_crash() {
+        // empty read, length-1, all-N, and a sub-adapter-length read: every one
+        // fails the default min-length; run_se must return Ok with 0 output and
+        // never panic (adapter trimming on reads shorter than the adapter etc.).
+        let d = std::env::temp_dir().join(format!("cleaver_fastp_edge_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let inp = d.join("edge.fq");
+        std::fs::write(
+            &inp,
+            "@empty\n\n+\n\n@one\nA\n+\nI\n@alln\nNNNNNNNNNN\n+\nIIIIIIIIII\n@short\nAC\n+\nII\n",
+        )
+        .unwrap();
+        let out = d.join("edge.out.fq");
+        let p = FastpParams { adapter_r1: Some(b"AGATCGGAAGAGC".to_vec()), ..Default::default() };
+        let rep = run_se(&inp, &out, &p).expect("edge input must not crash");
+        assert_eq!(rep.before.reads, 4, "all four reads were read");
+        let n = std::fs::read_to_string(&out).unwrap().lines().filter(|l| l.starts_with('@')).count();
+        assert_eq!(n, 0, "all edge reads filtered by the default min-length");
+    }
+
+    #[test]
+    fn all_n_read_is_too_many_n() {
+        // length 10 clears a min-length of 1, so the N filter (default 5) fires
+        let p = FastpParams { length_required: 1, ..Default::default() };
+        assert!(matches!(
+            filter_one(&fq(&"N".repeat(10), &"I".repeat(10)), &p),
+            FilterVerdict::TooManyN
+        ));
+    }
+
+    #[test]
+    fn read_fully_consumed_by_adapter_then_filtered() {
+        // read == adapter -> trim_adapter removes everything, leaving length 0,
+        // which then fails the length filter (no crash on the empty read)
+        let mut r = fq("AGATCGGAAGAGC", &"I".repeat(13));
+        let removed = trim_adapter(&mut r, b"AGATCGGAAGAGC");
+        assert_eq!(removed, 13);
+        assert_eq!(r.seq.len(), 0);
+        let p = FastpParams { length_required: 15, ..Default::default() };
+        assert!(matches!(filter_one(&r, &p), FilterVerdict::TooShort));
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn gzip_roundtrip() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("cleaver_fastp_gz_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let inp = d.join("in.fq.gz");
+        let f = std::fs::File::create(&inp).unwrap();
+        let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+        write!(enc, "@r1\n{}\n+\n{}\n", "ACGT".repeat(8), "I".repeat(32)).unwrap();
+        enc.finish().unwrap();
+        let out = d.join("out.fq.gz");
+        let rep = run_se(&inp, &out, &FastpParams { disable_adapter: true, ..Default::default() }).unwrap();
+        assert_eq!(rep.before.reads, 1);
+        // the .gz output must itself be valid gzip that round-trips one 32bp read
+        let (r, _g) = crate::open_reader(&out).unwrap();
+        let mut fr = FastqReader::new(r);
+        let rec = fr.next_record().unwrap().expect("one record round-tripped");
+        assert_eq!(rec.seq.len(), 32);
     }
 }

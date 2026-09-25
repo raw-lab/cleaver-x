@@ -13,7 +13,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 
-use hydra_mpp_core::prelude::*;
+use hydra_mpp::prelude::*;
 
 /// Build a HydraMPP [`Config`] from the CLI's cluster flags:
 ///   * `--head`            run as the head node (workers connect in)

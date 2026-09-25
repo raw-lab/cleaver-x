@@ -1,28 +1,19 @@
-Creative Commons Attribution-NonCommercial (CC BY-NC 4.0)
+Cleaver — a streaming, record-aware FASTA/FASTQ file chunker
+Copyright (c) 2025 Richard Allen White III / RAW Lab
 
-Academic and Non-Commercial Use License
+This work is licensed under the Creative Commons
+Attribution-NonCommercial 4.0 International License (CC-BY-NC-4.0).
 
-Copyright (c) 2026 Richard Allen White III
+You are free to:
+  Share — copy and redistribute the material in any medium or format
+  Adapt — remix, transform, and build upon the material
 
-Permission is hereby granted, free of charge, to any person or organization obtaining a copy
-of this software and associated documentation files (the "Software"), to use, copy, modify,
-and distribute the Software for academic, research, and non-commercial purposes, subject to
-the following conditions:
+Under the following terms:
+  Attribution  — You must give appropriate credit, provide a link to the
+                 license, and indicate if changes were made.
+  NonCommercial — You may not use the material for commercial purposes.
 
-1. The above copyright notice and this permission notice shall be included in all copies
-   or substantial portions of the Software.
+No additional restrictions — You may not apply legal terms or technological
+measures that legally restrict others from doing anything the license permits.
 
-2. The Software may not be used, in whole or in part, for commercial purposes without
-   prior written permission from the copyright holder.
-
-3. Commercial purposes include, but are not limited to, use in a product or service that
-   is sold, licensed, or generates revenue.
-
-4. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-   PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
-   FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-   DEALINGS IN THE SOFTWARE.
-
-For commercial licensing inquiries, please contact: Richard Allen White III, rwhit101@charlotte.edu
+Full legal text: https://creativecommons.org/licenses/by-nc/4.0/legalcode

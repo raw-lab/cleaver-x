@@ -12,8 +12,8 @@ use std::io::Write;
 
 use anyhow::{anyhow, Result};
 
-use cleaver_core::{align, annotation, chunk_file, compute, count, formats, Config, Format, Match, Mode};
-use cleaver_core::genome;
+use cleaver::{align, annotation, chunk_file, compute, count, formats, Config, Format, Match, Mode};
+use cleaver::genome;
 
 use crate::gpu;
 
@@ -201,13 +201,13 @@ pub fn run() -> Result<()> {
               @c\nACGTACGTACGTACGTACGT\n+\n####################\n",
         )?;
         let out = tmp.join("d.out.fastq");
-        let p = cleaver_core::fastp::FastpParams {
+        let p = cleaver::fastp::FastpParams {
             length_required: 10,
             qualified_quality_phred: 20,
             unqualified_percent_limit: 50.0,
             ..Default::default()
         };
-        let rep = cleaver_core::fastp::run_se(&fq, &out, &p)?;
+        let rep = cleaver::fastp::run_se(&fq, &out, &p)?;
         if (rep.filter.passed, rep.filter.too_short, rep.filter.low_quality) != (1, 1, 1) {
             return Err(anyhow!(
                 "expected 1 pass / 1 short / 1 low-qual, got {}/{}/{}",
@@ -229,13 +229,13 @@ pub fn run() -> Result<()> {
             b"@r1\nAAAACCCCGGGGTTTTACGTACGTACGTAC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n\
               @r2\nGTGTGTGTGTGTGTGTGTGTACGTACGTAC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n",
         )?;
-        let bcs = cleaver_core::demux::read_barcodes(&bcf)?;
-        let p = cleaver_core::demux::DemuxParams {
+        let bcs = cleaver::demux::read_barcodes(&bcf)?;
+        let p = cleaver::demux::DemuxParams {
             both_ends: false,
             min_score: 0.85,
             ..Default::default()
         };
-        let st = cleaver_core::demux::demux_file(&reads, &tmp.join("dx_out"), &bcs, &p)?;
+        let st = cleaver::demux::demux_file(&reads, &tmp.join("dx_out"), &bcs, &p)?;
         if (st.classified, st.unclassified) != (1, 1) {
             return Err(anyhow!(
                 "expected 1 classified / 1 unclassified, got {}/{}",
@@ -244,6 +244,74 @@ pub fn run() -> Result<()> {
             ));
         }
         Ok("2 reads -> 1 barcoded (trimmed), 1 unclassified".into())
+    });
+
+    // ---- samtools (view/sort/index/flagstat/fastq) -------------------------
+    run("samtools (view/sort/idx)", &mut || {
+        use cleaver::samtools as st;
+        let s = tmp.join("st.sam");
+        fs::write(
+            &s,
+            b"@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n@SQ\tSN:chr2\tLN:1000\n\
+a\t0\tchr1\t100\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n\
+b\t0\tchr1\t50\t60\t10M\t*\t0\t0\tTTTTTTTTTT\tIIIIIIIIII\n\
+c\t4\t*\t0\t0\t*\t*\t0\t0\tGGGGGGGGGG\tIIIIIIIIII\n\
+d\t16\tchr2\t200\t30\t10M\t*\t0\t0\tCCCCCCCCCC\tIIIIIIIIII\n",
+        )?;
+        let unmapped = st::view(
+            &s,
+            Format::Sam,
+            &st::ViewParams { filter: st::Filter { require: 4, ..Default::default() }, count: true, ..Default::default() },
+        )?;
+        let mapped = st::view(
+            &s,
+            Format::Sam,
+            &st::ViewParams { filter: st::Filter { exclude: 4, ..Default::default() }, count: true, ..Default::default() },
+        )?;
+        if (unmapped, mapped) != (1, 3) {
+            return Err(anyhow!("view flag filter: -f4={unmapped} -F4={mapped} (want 1/3)"));
+        }
+        let bam = tmp.join("st.sorted.bam");
+        st::sort(&s, Format::Sam, Some(&bam), false, true)?;
+        let bai = st::index(&bam, None)?;
+        if fs::metadata(&bai)?.len() == 0 {
+            return Err(anyhow!("BAI index is empty"));
+        }
+        // the sorted BAM's index must read back as a valid BAI
+        if cleaver::samtools::read_bai_ref_count(&bai)? == 0 {
+            return Err(anyhow!("BAI has no reference sequences"));
+        }
+        // a coordinate sort must stamp @HD SO:coordinate
+        let sorted_sam = tmp.join("st.sorted.sam");
+        st::sort(&s, Format::Sam, Some(&sorted_sam), false, false)?;
+        if !fs::read_to_string(&sorted_sam)?.contains("SO:coordinate") {
+            return Err(anyhow!("sort did not set @HD SO:coordinate"));
+        }
+        let fst = st::flagstat(&s, Format::Sam)?;
+        if fst.mapped[0] != 3 {
+            return Err(anyhow!("flagstat mapped={} (want 3)", fst.mapped[0]));
+        }
+        let fq = tmp.join("st.unmapped.fq");
+        let fx = st::fastx(
+            &s,
+            Format::Sam,
+            &st::FastxParams { filter: st::Filter { require: 4, ..Default::default() }, output: Some(fq.clone()), ..Default::default() },
+        )?;
+        if fx.total != 1 || !fs::read_to_string(&fq)?.contains("GGGGGGGGGG") {
+            return Err(anyhow!("fastq -f4 did not extract the unmapped read"));
+        }
+        // mpileup (no ref) + coverage over the two mapped chr1 reads
+        let pile = tmp.join("st.pileup");
+        st::mpileup(&s, Format::Sam, &st::MpileupParams { output: Some(pile.clone()), ..Default::default() })?;
+        if !fs::read_to_string(&pile)?.lines().any(|l| l.starts_with("chr1\t")) {
+            return Err(anyhow!("mpileup produced no chr1 positions"));
+        }
+        let cov = tmp.join("st.cov");
+        st::coverage(&s, Format::Sam, &st::CoverageParams { output: Some(cov.clone()), ..Default::default() })?;
+        if !fs::read_to_string(&cov)?.lines().any(|l| l.starts_with("chr1\t")) {
+            return Err(anyhow!("coverage produced no chr1 row"));
+        }
+        Ok("view -f4/-F4, sort(+SO)->bam, index (BAI), flagstat, fastq, mpileup, coverage".into())
     });
 
     // ---- format detection ---------------------------------------------------
@@ -286,7 +354,7 @@ pub fn run() -> Result<()> {
 /// and verify the results — proving the distributed engine works end-to-end.
 #[cfg(feature = "hydra")]
 fn hydra_selftest() -> Result<String> {
-    use hydra_mpp_core::prelude::*;
+    use hydra_mpp::prelude::*;
 
     fn square(x: u64) -> u64 {
         x * x

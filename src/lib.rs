@@ -29,6 +29,7 @@ pub mod compute;
 pub mod count;
 pub mod fastp;
 pub mod demux;
+pub mod samtools;
 pub mod formats;
 pub mod genome;
 pub mod stats;

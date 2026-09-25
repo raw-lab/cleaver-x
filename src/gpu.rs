@@ -8,7 +8,7 @@
 //! genuinely data-parallel — so `stats` offloads it to the GPU when the `gpu`
 //! feature is built and a device is available, and falls back to the CPU
 //! reference otherwise. Both paths fold the *same* per-byte histogram into
-//! A/C/G/T/N/other (see `cleaver_core::compute`), so results are identical.
+//! A/C/G/T/N/other (see `cleaver::compute`), so results are identical.
 //!
 //! The CUDA kernel uses `cudarc` 0.12, whose build needs the CUDA toolkit and
 //! rustc >= 1.85, so it is OFF by default and compiled on GPU hosts with
@@ -18,8 +18,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use cleaver_core::compute::{self, Counts};
-use cleaver_core::Format;
+use cleaver::compute::{self, Counts};
+use cleaver::Format;
 
 pub struct Gpu {
     pub name: String,
@@ -124,7 +124,7 @@ extern "C" __global__ void hist_bytes(const unsigned char *data,
         Ok(())
     }
 
-    let (mut reader, _gz) = cleaver_core::open_reader(path)?;
+    let (mut reader, _gz) = cleaver::open_reader(path)?;
     let mut line: Vec<u8> = Vec::with_capacity(256);
     let mut batch: Vec<u8> = Vec::with_capacity(BATCH);
     let mut lineno: u64 = 0;

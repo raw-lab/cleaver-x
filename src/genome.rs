@@ -47,12 +47,43 @@ impl GenomeStats {
     }
 }
 
-/// N/L statistics over sequence lengths sorted **descending**, via the vendored
-/// `rustyomestats` crate (`rustyomestats::stats::compute_nl`).
+/// N/L statistics over sequence lengths sorted **descending**.
 ///
 /// `nx[k]` is the length of the sequence at which the running total first
 /// reaches `frac[k]` of the sum (N25/N50/N75/N90); `lx[k]` is how many
 /// sequences that took.
+///
+/// By default this is computed natively so the crate stays dependency-light.
+/// Build with `--features rustyomestats` to delegate to the published
+/// [`rustyomestats`](https://crates.io/crates/rustyomestats) crate instead
+/// (same definition; that crate needs a newer toolchain — see the README).
+#[cfg(not(feature = "rustyomestats"))]
+fn compute_nl(lengths_desc: &[usize]) -> ([u64; 4], [u64; 4]) {
+    let total: usize = lengths_desc.iter().sum();
+    let t = [
+        total * 25 / 100,
+        total * 50 / 100,
+        total * 75 / 100,
+        total * 90 / 100,
+    ];
+    let mut nx = [0u64; 4];
+    let mut lx = [0u64; 4];
+    let mut cum = 0usize;
+    for (i, &len) in lengths_desc.iter().enumerate() {
+        cum += len;
+        let count = (i + 1) as u64;
+        for k in 0..4 {
+            if nx[k] == 0 && cum >= t[k] {
+                nx[k] = len as u64;
+                lx[k] = count;
+            }
+        }
+    }
+    (nx, lx)
+}
+
+/// N/L statistics via the published `rustyomestats` crate.
+#[cfg(feature = "rustyomestats")]
 fn compute_nl(lengths_desc: &[usize]) -> ([u64; 4], [u64; 4]) {
     let (nx, lx) = rustyomestats::stats::compute_nl(lengths_desc);
     let to_u64 = |a: [usize; 4]| [a[0] as u64, a[1] as u64, a[2] as u64, a[3] as u64];
@@ -222,5 +253,30 @@ mod tests {
         let s = genome_stats_file(&p, Format::Fasta, Some(fake)).unwrap();
         assert_eq!(s.total_bp, 8);
         assert!((s.gc_percent - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_nl_matches_standard_definition() {
+        // Same definition as rustyomestats::stats::compute_nl: N_x is the length
+        // of the sequence at which the running total first reaches x% of the
+        // sum; L_x is how many sequences that took. Thresholds are floor(total*x/100).
+        // lengths (desc): 100, 50, 30, 20  -> total 200
+        //   25% = 50  -> cum 100 >= 50 at seq 1  -> N25=100, L25=1
+        //   50% = 100 -> cum 100 >= 100 at seq 1 -> N50=100, L50=1
+        //   75% = 150 -> cum 150 >= 150 at seq 2 -> N75=50,  L75=2
+        //   90% = 180 -> cum 180 >= 180 at seq 3 -> N90=30,  L90=3
+        let (nx, lx) = compute_nl(&[100, 50, 30, 20]);
+        assert_eq!(nx, [100, 100, 50, 30]);
+        assert_eq!(lx, [1, 1, 2, 3]);
+
+        // single sequence: every threshold is crossed by it
+        let (nx1, lx1) = compute_nl(&[42]);
+        assert_eq!(nx1, [42, 42, 42, 42]);
+        assert_eq!(lx1, [1, 1, 1, 1]);
+
+        // empty input must not panic and yields zeros
+        let (nx0, lx0) = compute_nl(&[]);
+        assert_eq!(nx0, [0, 0, 0, 0]);
+        assert_eq!(lx0, [0, 0, 0, 0]);
     }
 }

@@ -21,7 +21,7 @@ const IEC_EXT: [&str; 9] =
 /// Parse a human-readable size string into a number of bytes.
 ///
 /// ```
-/// use cleaver_core::parse_size;
+/// use cleaver::parse_size;
 /// assert_eq!(parse_size("0 B").unwrap(), 0);
 /// assert_eq!(parse_size("1 K").unwrap(), 1024);
 /// assert_eq!(parse_size("1 M").unwrap(), 1_048_576);

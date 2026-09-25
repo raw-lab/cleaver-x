@@ -1,13 +1,61 @@
-[workspace]
-members = ["cleaver-core", "cleaver-cli", "vendor/hydra-mpp-core", "vendor/rustyomestats"]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "cleaver"
 version = "1.0.1"
-edition = "2026"
+edition = "2021"
+rust-version = "1.75"
 license = "CC-BY-NC-4.0"
-authors = ["RAW Lab <rwhit101@charlotte.edu>"]
+authors = ["RAW Lab <raw.lab@uncc.edu>"]
 repository = "https://github.com/raw-lab/cleaver"
+homepage = "https://github.com/raw-lab/cleaver"
+readme = "README.md"
+description = "Record-aware FASTA/FASTQ/SAM/BAM toolkit: streaming split & convert, fastp-style QC, VERSE-style counting, ONT barcode demux, and a pure-Rust samtools suite."
+keywords = ["bioinformatics", "fasta", "fastq", "bam", "genomics"]
+categories = ["science", "command-line-utilities"]
+exclude = ["/bench", "/.github", "/target"]
+
+# One crate, two targets: the reusable engine (lib) and the `cleaver` binary.
+[lib]
+name = "cleaver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cleaver"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+# Deterministic reference-sequence ordering in SAM/BAM headers.
+indexmap = "=2.2.6"
+# Pure-Rust htslib equivalent: SAM/BAM/BGZF I/O and BAI indexing.
+noodles-sam = "=0.52.0"
+noodles-bam = "=0.55.0"
+noodles-bgzf = "=0.26.0"
+noodles-csi = "=0.30.0"
+# BString, for writing the @HD SO sort-order tag in `samtools sort`.
+bstr = "1"
+# gzip I/O (rust_backend = no C toolchain needed); enabled by the `gzip` feature.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+clap = { version = "=4.5.4", features = ["derive"] }
+rayon = "=1.10.0"
+rayon-core = "=1.12.1"            # MSRV pin: rayon-core 1.13 needs rustc 1.80
+serde = { version = "1", features = ["derive"] }
+# Distributed backend, from crates.io. `default-features = false` drops HydraMPP's
+# own CLI tools (and their clap pin) - cleaver only needs the engine library.
+hydra-mpp = { version = "1.0.0", default-features = false, optional = true }
+# GPU kernel (NVIDIA) for `stats`; enabled by --features gpu. Needs the CUDA
+# toolkit at build time, so it is OFF by default and built on GPU hosts.
+rustyomestats = { version = "0.2.1", optional = true }
+cudarc = { version = "0.12", default-features = false, features = ["std", "driver", "nvrtc"], optional = true }
+
+[features]
+default = ["gzip"]
+gzip = ["dep:flate2"]             # transparent .gz input/output
+hydra = ["dep:hydra-mpp"]         # cross-node / multi-core scaling via HydraMPP
+# Auto-detects the CUDA version from `nvcc` on the build host. Explicit
+# cudarc pins take priority in cudarc's build.rs, so you can still override with
+# e.g. `--features gpu,cudarc/cuda-12040` when nvcc is absent or too new.
+gpu = ["dep:cudarc", "cudarc/cuda-version-from-build-system"]
+rustyomestats = ["dep:rustyomestats"] # N50/L50 via the published rustyomestats crate
 
 # HydraMPP isolates panicking tasks with catch_unwind, so the default release
 # profile keeps panic = "unwind" (a few KB larger, but one bad file can't abort

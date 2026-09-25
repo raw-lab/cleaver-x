@@ -21,9 +21,9 @@ command -v cargo >/dev/null 2>&1 || {
 
 echo ">> building cleaver (release${FEATURES:+, features: $FEATURES}) ..."
 if [ -n "$FEATURES" ]; then
-    cargo build --release --locked -p cleaver-cli --features "$FEATURES"
+    cargo build --release --locked --features "$FEATURES"
 else
-    cargo build --release --locked -p cleaver-cli
+    cargo build --release --locked
 fi
 BIN="$HERE/target/release/cleaver"
 [ -x "$BIN" ] || { echo "error: build did not produce $BIN" >&2; exit 1; }
@@ -45,13 +45,27 @@ install -m 0755 "$BIN" "$INSTALL_DIR/cleaver"
 echo ">> installed: $INSTALL_DIR/cleaver"
 
 if ! on_path "$INSTALL_DIR"; then
-    SHELL_RC="$HOME/.bashrc"
-    [ -n "${ZSH_VERSION:-}" ] && SHELL_RC="$HOME/.zshrc"
-    echo ">> $INSTALL_DIR is not on PATH; appending an export to $SHELL_RC"
-    printf '\n# added by cleaver install.sh\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$SHELL_RC"
-    echo ">> open a new shell or: export PATH=\"$INSTALL_DIR:\$PATH\""
+    # Never edit the user's shell rc files behind their back: print the line and
+    # let them add it (set CLEAVER_EDIT_RC=1 to opt in to the old behaviour).
+    if [ "${CLEAVER_EDIT_RC:-0}" = "1" ]; then
+        SHELL_RC="$HOME/.bashrc"
+        [ -n "${ZSH_VERSION:-}" ] && SHELL_RC="$HOME/.zshrc"
+        printf '\n# added by cleaver install.sh\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$SHELL_RC"
+        echo ">> appended a PATH export to $SHELL_RC (CLEAVER_EDIT_RC=1)"
+    else
+        echo ">> NOTE: $INSTALL_DIR is not on your PATH. Add this line to your shell rc:"
+        echo "       export PATH=\"$INSTALL_DIR:\$PATH\""
+    fi
 fi
 
+# Verify for real: a failure here must fail the install, not be swallowed.
 echo ">> verifying ..."
-"$INSTALL_DIR/cleaver" version || true
-echo ">> done. Try: cleaver doctor"
+if ! "$INSTALL_DIR/cleaver" version; then
+    echo "error: installed binary failed to run: $INSTALL_DIR/cleaver" >&2
+    exit 1
+fi
+if ! "$INSTALL_DIR/cleaver" doctor; then
+    echo "error: 'cleaver doctor' reported a failure (see above)" >&2
+    exit 1
+fi
+echo ">> done. cleaver is installed and healthy."

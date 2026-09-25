@@ -232,11 +232,10 @@ fn classify(seq: &[u8], barcodes: &[Barcode], rc: &[Vec<u8>], p: &DemuxParams) -
     let right = &seq[len - w..];
 
     // For each barcode, the best of (forward @ left end, revcomp @ right end).
-    let mut best_idx: Option<usize> = None;
+    // Track index + both end matches together so extraction can't panic.
     let mut best_id = 0.0f64;
     let mut second_id = 0.0f64;
-    let mut best_left: Option<EndMatch> = None;
-    let mut best_right: Option<EndMatch> = None;
+    let mut best: Option<(usize, EndMatch, Option<EndMatch>)> = None;
 
     for (bi, bc) in barcodes.iter().enumerate() {
         let lm = best_in_window(left, &bc.seq);
@@ -245,20 +244,16 @@ fn classify(seq: &[u8], barcodes: &[Barcode], rc: &[Vec<u8>], p: &DemuxParams) -
         if id > best_id {
             second_id = best_id;
             best_id = id;
-            best_idx = Some(bi);
-            best_left = Some(lm);
-            best_right = rm;
+            best = Some((bi, lm, rm));
         } else if id > second_id {
             second_id = id;
         }
     }
 
-    let idx = match best_idx {
-        Some(i) => i,
+    let (idx, lm, rm) = match best {
+        Some(t) => t,
         None => return (None, 0, 0),
     };
-    let lm = best_left.unwrap();
-    let rm = best_right;
 
     // acceptance: identity threshold (or max_errors) + margin over runner-up
     let pass_thresh = match p.max_errors {
@@ -335,13 +330,18 @@ pub fn demux_file(input: &Path, outdir: &Path, barcodes: &[Barcode], p: &DemuxPa
             r.seq = r.seq[start..end].to_vec();
             r.qual = r.qual[start..end].to_vec();
         }
-        if !writers.contains_key(&out_label) {
-            let path = outdir.join(format!("{out_label}.fastq"));
-            let f = std::fs::File::create(&path)
-                .with_context(|| format!("creating '{}'", path.display()))?;
-            writers.insert(out_label.clone(), std::io::BufWriter::new(f));
-        }
-        write_record(writers.get_mut(&out_label).unwrap(), &r)?;
+        // Look up (or create) the writer for this label in one pass — the Entry
+        // API returns a `&mut` with no possibility of a panicking re-lookup.
+        let w = match writers.entry(out_label.clone()) {
+            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(e) => {
+                let path = outdir.join(format!("{out_label}.fastq"));
+                let f = std::fs::File::create(&path)
+                    .with_context(|| format!("creating '{}'", path.display()))?;
+                e.insert(std::io::BufWriter::new(f))
+            }
+        };
+        write_record(w, &r)?;
     }
     for (_, mut w) in writers {
         w.flush()?;
@@ -416,5 +416,30 @@ mod tests {
         let out = std::fs::read_to_string(dir.join("bc01.fastq")).unwrap();
         assert!(out.contains("ACGTACGTACGTAC"));
         assert!(!out.contains("AAAACCCCGGGGTTTT"));
+    }
+
+    #[test]
+    fn short_and_empty_reads_route_to_unclassified() {
+        // A read shorter than the 16bp barcode and an empty read must not panic
+        // (window = min(w, len); empty slices) and must land in `unclassified`.
+        let dir = std::env::temp_dir().join(format!("cleaver-demux-edge-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let bcf = dir.join("bc.fasta");
+        std::fs::write(&bcf, b">bc01\nAAAACCCCGGGGTTTT\n").unwrap();
+        let reads = dir.join("reads.fastq");
+        std::fs::write(
+            &reads,
+            b"@short\nACGT\n+\nIIII\n\
+              @empty\n\n+\n\n\
+              @ok\nAAAACCCCGGGGTTTTACGTACGTACGT\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIII\n",
+        )
+        .unwrap();
+        let bcs = read_barcodes(&bcf).unwrap();
+        let p = DemuxParams { both_ends: false, min_score: 0.85, ..Default::default() };
+        let stats = demux_file(&reads, &dir, &bcs, &p).unwrap();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.classified, 1, "only the full bc01 read matches");
+        assert_eq!(stats.unclassified, 2, "short + empty reads go to unclassified");
+        assert_eq!(stats.per_barcode.get("bc01"), Some(&1));
     }
 }

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use cleaver_core::{align, annotation, chunk_file, count, formats, genome, Config, Format, Match, Mode};
+use cleaver::{align, annotation, chunk_file, count, formats, genome, Config, Format, Match, Mode};
 
 use crate::gpu;
 
@@ -147,7 +147,7 @@ pub struct StatsOutcome {
 /// fall back to device 0 when the GPU kernel is compiled in, else CPU.
 fn pinned_device() -> Option<usize> {
     #[cfg(feature = "hydra")]
-    if let Some(d) = hydra_mpp_core::current_gpus().first().copied() {
+    if let Some(d) = hydra_mpp::current_gpus().first().copied() {
         return Some(d);
     }
     #[cfg(feature = "gpu")]
@@ -240,6 +240,7 @@ pub struct CountJob {
     pub stranded: u8,
     pub min_mapq: u8,
     pub count_multimappers: bool,
+    pub primary: bool,
     pub allow_multi_overlap: bool,
     /// VERSE assignment mode `-z`: 0/1 union, 2 strict, 3 nonempty,
     /// 4 union-strict, 5 cover-length.
@@ -289,6 +290,7 @@ fn make_params(
     stranded: u8,
     min_mapq: u8,
     count_multimappers: bool,
+    primary: bool,
     allow_multi_overlap: bool,
     mode: u8,
     require_both_ends: bool,
@@ -303,7 +305,7 @@ fn make_params(
         count_multimappers,
         allow_multi_overlap,
         mode: mode_from_u8(mode),
-        primary_only: true,
+        primary_only: primary,
         require_both_ends,
         exclude_chimeric,
         check_pe_dist,
@@ -323,7 +325,7 @@ pub fn do_count(job: CountJob) -> CountOutcome {
         }
         let ann = annotation::Annotation::from_path(&job.annotation, &job.feature_type, &job.group_by)?;
         let params = make_params(
-            job.stranded, job.min_mapq, job.count_multimappers, job.allow_multi_overlap, job.mode,
+            job.stranded, job.min_mapq, job.count_multimappers, job.primary, job.allow_multi_overlap, job.mode,
             job.require_both_ends, job.exclude_chimeric, job.check_pe_dist, job.min_frag_len, job.max_frag_len,
         );
         let fc = count::count_file(&job.input, fmt, &ann, &params)?;
@@ -355,6 +357,7 @@ pub struct HierJob {
     pub stranded: u8,
     pub min_mapq: u8,
     pub count_multimappers: bool,
+    pub primary: bool,
     pub allow_multi_overlap: bool,
     pub mode: u8,
     pub require_both_ends: bool,
@@ -402,7 +405,7 @@ pub fn do_count_hier(job: HierJob) -> HierOutcome {
             anns.push(annotation::Annotation::from_path(&job.annotation, ft, &job.group_by)?);
         }
         let params = make_params(
-            job.stranded, job.min_mapq, job.count_multimappers, job.allow_multi_overlap, job.mode,
+            job.stranded, job.min_mapq, job.count_multimappers, job.primary, job.allow_multi_overlap, job.mode,
             job.require_both_ends, job.exclude_chimeric, job.check_pe_dist, job.min_frag_len, job.max_frag_len,
         );
         let hc = count::count_file_hier(&job.input, fmt, &anns, &params)?;

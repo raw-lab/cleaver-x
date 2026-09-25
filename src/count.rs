@@ -28,6 +28,9 @@ pub struct CountParams {
     pub stranded: u8,
     /// Drop alignments with MAPQ below this (0 = keep all).
     pub min_mapq: u8,
+    /// Count only primary alignments (excludes 0x100), like featureCounts'
+    /// `--primary`. Off by default, matching featureCounts.
+    ///
     /// Count multi-mapping reads (NH > 1) instead of discarding them.
     pub count_multimappers: bool,
     /// Count reads overlapping >1 meta-feature against all of them.
@@ -55,7 +58,9 @@ impl Default for CountParams {
             count_multimappers: false,
             allow_multi_overlap: false,
             mode: Mode::Union,
-            primary_only: true,
+            // featureCounts counts secondary alignments unless --primary is
+            // given, so the default must be false to match it.
+            primary_only: false,
             require_both_ends: false,
             exclude_chimeric: false,
             check_pe_dist: false,
@@ -160,7 +165,9 @@ fn nh_tag(d: &Data) -> Option<i64> {
 /// reference name, covered blocks, and strand when it passes.
 fn prefilter(rec: &RecordBuf, header: &Header, p: &CountParams) -> Pre {
     let flags = rec.flags();
-    if p.primary_only && (flags.is_secondary() || flags.is_supplementary()) {
+    // featureCounts' --primary identifies primary alignments by bit 0x100
+    // only; supplementary alignments (0x800) are still counted.
+    if p.primary_only && flags.is_secondary() {
         return Pre::Multi;
     }
     if p.exclude_chimeric && flags.is_supplementary() {
@@ -477,5 +484,29 @@ mod tests {
         ];
         let b = ref_blocks(150, &ops);
         assert_eq!(b, vec![(150, 200), (300, 350)]);
+    }
+
+    #[test]
+    fn read_off_annotation_is_no_feature() {
+        // A read aligned to a reference with no annotated features must be
+        // tallied as no_feature (like featureCounts), not dropped or panicked.
+        let d = workdir();
+        let gtf = d.join("off.gtf");
+        let mut f = std::fs::File::create(&gtf).unwrap();
+        writeln!(f, "chr1\ts\texon\t100\t300\t.\t+\t.\tgene_id \"gX\";").unwrap();
+        drop(f);
+        let sam = d.join("off.sam");
+        let mut s = std::fs::File::create(&sam).unwrap();
+        writeln!(s, "@HD\tVN:1.6\tSO:coordinate").unwrap();
+        writeln!(s, "@SQ\tSN:chr1\tLN:2000").unwrap();
+        writeln!(s, "@SQ\tSN:chrUn\tLN:500").unwrap();
+        writeln!(s, "rA\t0\tchr1\t120\t60\t50M\t*\t0\t0\t*\t*").unwrap(); // -> gX
+        writeln!(s, "rB\t0\tchrUn\t10\t60\t50M\t*\t0\t0\t*\t*").unwrap(); // -> no_feature
+        drop(s);
+        let ann = Annotation::from_path(&gtf, "exon", "gene_id").unwrap();
+        let fc = count_file(&sam, Format::Sam, &ann, &CountParams::default()).unwrap();
+        assert_eq!(fc.assigned, 1, "rA on chr1 assigned to gX");
+        assert_eq!(fc.no_feature, 1, "rB on unannotated chrUn -> no_feature");
+        assert_eq!(fc.total, 2);
     }
 }

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
-use cleaver_core::{align, compute::Counts, parse_size, Format};
+use cleaver::{align, compute::Counts, parse_size, Format};
 
 const BANNER: &str = r"
    ___ _
@@ -157,6 +157,10 @@ enum Cmd {
         /// Count multi-mapping reads (NH > 1) instead of discarding them.
         #[arg(short = 'M', long)]
         count_multimappers: bool,
+        /// Count primary alignments only (excludes FLAG 0x100), like
+        /// featureCounts' --primary. Off by default, as in featureCounts.
+        #[arg(long)]
+        primary: bool,
         /// Count reads overlapping >1 meta-feature against all of them.
         #[arg(short = 'O', long)]
         allow_multi_overlap: bool,
@@ -363,6 +367,14 @@ enum Cmd {
         one_end: bool,
     },
 
+    /// samtools-compatible SAM/BAM utilities: view, sort, index, fastq,
+    /// fasta, flagstat, idxstats, merge, faidx, depth.
+    #[command(before_help = BANNER)]
+    Samtools {
+        #[command(subcommand)]
+        cmd: SamCmd,
+    },
+
     /// Self-test: verify the install and that every code path works.
     #[command(before_help = BANNER)]
     Doctor,
@@ -372,6 +384,266 @@ enum Cmd {
     /// Show the banner, version, and build configuration.
     #[command(before_help = BANNER)]
     Version,
+}
+
+/// Parse a SAM FLAG value in decimal or `0x` hexadecimal (as samtools accepts).
+fn parse_flag(s: &str) -> std::result::Result<u16, String> {
+    let s = s.trim();
+    let r = if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u16::from_str_radix(h, 16)
+    } else {
+        s.parse::<u16>()
+    };
+    r.map_err(|_| format!("invalid FLAG '{s}' (use a decimal or 0x-prefixed value)"))
+}
+
+#[derive(Subcommand)]
+enum SamCmd {
+    /// Filter/print alignments by flag/MAPQ/region/subsample (`samtools view`).
+    #[command(before_help = BANNER)]
+    View {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Output path (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Write BAM instead of SAM.
+        #[arg(short = 'b', long)]
+        bam: bool,
+        /// Print only the count of matching records.
+        #[arg(short = 'c', long)]
+        count: bool,
+        /// Write the header only.
+        #[arg(short = 'H', long = "header-only")]
+        header_only: bool,
+        /// Only output records with ALL of these flag bits set (decimal or 0x).
+        #[arg(short = 'f', value_parser = parse_flag, default_value_t = 0)]
+        require: u16,
+        /// Do not output records with ANY of these flag bits set (decimal or 0x).
+        #[arg(short = 'F', value_parser = parse_flag, default_value_t = 0)]
+        exclude: u16,
+        /// Skip records with mapping quality below this value.
+        #[arg(short = 'q', default_value_t = 0)]
+        min_mapq: u8,
+        /// Region filter: `chr` or `chr:beg-end` (linear scan; no index needed).
+        #[arg(short = 'r', long)]
+        region: Option<String>,
+        /// Subsample: FLOAT where the integer part is the seed and the fraction
+        /// is the fraction of records to keep (e.g. `42.1` keeps ~10%).
+        #[arg(short = 's', long)]
+        subsample: Option<f64>,
+    },
+
+    /// Sort by coordinate (default) or read name with `-n` (`samtools sort`).
+    #[command(before_help = BANNER)]
+    Sort {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Output path (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Sort by read name instead of coordinate.
+        #[arg(short = 'n', long = "by-name")]
+        by_name: bool,
+        /// Output format: `bam` (default) or `sam`.
+        #[arg(short = 'O', long, default_value = "bam")]
+        format: String,
+        /// Thread count (accepted for compatibility; this build is single-core).
+        #[arg(short = '@', long = "threads", default_value_t = 1)]
+        threads: usize,
+    },
+
+    /// Build a BAI index for a coordinate-sorted BAM (`samtools index`).
+    #[command(before_help = BANNER)]
+    Index {
+        /// Coordinate-sorted BAM.
+        input: PathBuf,
+        /// Output index path (default: `<input>.bai`).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Extract reads to FASTQ, flag-filtered (`samtools fastq`; `-f 4` = unmapped).
+    #[command(before_help = BANNER)]
+    Fastq {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Single/interleaved output (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Require ALL of these flag bits (decimal or 0x). `-f 4` keeps unmapped.
+        #[arg(short = 'f', value_parser = parse_flag, default_value_t = 0)]
+        require: u16,
+        /// Exclude records with ANY of these flag bits (decimal or 0x).
+        #[arg(short = 'F', value_parser = parse_flag, default_value_t = 0)]
+        exclude: u16,
+        /// Skip records below this mapping quality.
+        #[arg(short = 'q', default_value_t = 0)]
+        min_mapq: u8,
+        /// READ1 output file (de-interleave paired reads).
+        #[arg(long = "r1")]
+        out1: Option<PathBuf>,
+        /// READ2 output file (de-interleave paired reads).
+        #[arg(long = "r2")]
+        out2: Option<PathBuf>,
+        /// Singleton output (paired reads whose mate is unmapped).
+        #[arg(short = 's', long)]
+        singleton: Option<PathBuf>,
+        /// Output for reads that are not part of a pair.
+        #[arg(long = "r0")]
+        out0: Option<PathBuf>,
+        /// Do not append `/1` or `/2` to read names.
+        #[arg(short = 'n', long = "no-suffix")]
+        no_suffix: bool,
+    },
+
+    /// Extract reads to FASTA, flag-filtered (`samtools fasta`).
+    #[command(before_help = BANNER)]
+    Fasta {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Single/interleaved output (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Require ALL of these flag bits (decimal or 0x).
+        #[arg(short = 'f', value_parser = parse_flag, default_value_t = 0)]
+        require: u16,
+        /// Exclude records with ANY of these flag bits (decimal or 0x).
+        #[arg(short = 'F', value_parser = parse_flag, default_value_t = 0)]
+        exclude: u16,
+        /// Skip records below this mapping quality.
+        #[arg(short = 'q', default_value_t = 0)]
+        min_mapq: u8,
+        /// READ1 output file.
+        #[arg(long = "r1")]
+        out1: Option<PathBuf>,
+        /// READ2 output file.
+        #[arg(long = "r2")]
+        out2: Option<PathBuf>,
+        /// Singleton output.
+        #[arg(short = 's', long)]
+        singleton: Option<PathBuf>,
+        /// Output for unpaired reads.
+        #[arg(long = "r0")]
+        out0: Option<PathBuf>,
+        /// Do not append `/1` or `/2` to read names.
+        #[arg(short = 'n', long = "no-suffix")]
+        no_suffix: bool,
+    },
+
+    /// Count records by SAM flag (`samtools flagstat`).
+    #[command(before_help = BANNER)]
+    Flagstat {
+        /// Input SAM/BAM.
+        input: PathBuf,
+    },
+
+    /// Per-reference mapped/unmapped read counts (`samtools idxstats`).
+    #[command(before_help = BANNER)]
+    Idxstats {
+        /// Input SAM/BAM.
+        input: PathBuf,
+    },
+
+    /// Merge and coordinate-sort SAM/BAM files (`samtools merge`).
+    #[command(before_help = BANNER)]
+    Merge {
+        /// Output path (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Output format: `bam` (default) or `sam`.
+        #[arg(short = 'O', long, default_value = "bam")]
+        format: String,
+        /// Input SAM/BAM files (two or more).
+        #[arg(required = true, num_args = 1..)]
+        inputs: Vec<PathBuf>,
+    },
+
+    /// Index a FASTA (`.fai`) or extract regions (`samtools faidx`).
+    #[command(before_help = BANNER)]
+    Faidx {
+        /// Input FASTA.
+        fasta: PathBuf,
+        /// Output for extracted regions (default: stdout). Ignored when building
+        /// the index (which is always written to `<fasta>.fai`).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Regions to extract (`chr` or `chr:beg-end`). If omitted, writes `.fai`.
+        regions: Vec<String>,
+    },
+
+    /// Per-position read depth (`samtools depth`).
+    #[command(before_help = BANNER)]
+    Depth {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Output path (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Skip reads below this mapping quality.
+        #[arg(short = 'Q', long = "min-mapq", default_value_t = 0)]
+        min_mapq: u8,
+        /// Region filter: `chr` or `chr:beg-end`.
+        #[arg(short = 'r', long)]
+        region: Option<String>,
+    },
+
+    /// Text pileup of every covered position (`samtools mpileup`).
+    #[command(before_help = BANNER)]
+    Mpileup {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Output path (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Reference FASTA (enables `.`/`,` matches and mismatch letters).
+        #[arg(short = 'f', long = "fasta-ref")]
+        reference: Option<PathBuf>,
+        /// Skip reads below this mapping quality.
+        #[arg(short = 'q', long = "min-MQ", default_value_t = 0)]
+        min_mapq: u8,
+        /// Skip bases below this base quality.
+        #[arg(short = 'Q', long = "min-BQ", default_value_t = 13)]
+        min_baseq: u8,
+        /// Region filter: `chr` or `chr:beg-end`.
+        #[arg(short = 'r', long)]
+        region: Option<String>,
+    },
+
+    /// Alias of `mpileup` (`samtools pileup`).
+    #[command(before_help = BANNER)]
+    Pileup {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Output path (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Reference FASTA.
+        #[arg(short = 'f', long = "fasta-ref")]
+        reference: Option<PathBuf>,
+        /// Skip reads below this mapping quality.
+        #[arg(short = 'q', long = "min-MQ", default_value_t = 0)]
+        min_mapq: u8,
+        /// Skip bases below this base quality.
+        #[arg(short = 'Q', long = "min-BQ", default_value_t = 13)]
+        min_baseq: u8,
+        /// Region filter: `chr` or `chr:beg-end`.
+        #[arg(short = 'r', long)]
+        region: Option<String>,
+    },
+
+    /// Per-reference coverage summary table (`samtools coverage`).
+    #[command(before_help = BANNER)]
+    Coverage {
+        /// Input SAM/BAM.
+        input: PathBuf,
+        /// Output path (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// Region filter: `chr` or `chr:beg-end`.
+        #[arg(short = 'r', long)]
+        region: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -525,6 +797,7 @@ fn main() -> Result<()> {
             stranded,
             min_mapq,
             count_multimappers,
+            primary,
             allow_multi_overlap,
             mode,
             assign_mode,
@@ -559,7 +832,7 @@ fn main() -> Result<()> {
                         annotation: annotation.clone(),
                         feature_types: types.clone(),
                         group_by: group_by.clone(),
-                        stranded, min_mapq, count_multimappers, allow_multi_overlap, mode: z,
+                        stranded, min_mapq, count_multimappers, primary, allow_multi_overlap, mode: z,
                         require_both_ends, exclude_chimeric, check_pe_dist, min_frag_len, max_frag_len,
                     })
                     .collect();
@@ -578,7 +851,7 @@ fn main() -> Result<()> {
                             annotation: annotation.clone(),
                             feature_type: t.clone(),
                             group_by: group_by.clone(),
-                            stranded, min_mapq, count_multimappers, allow_multi_overlap, mode: z,
+                            stranded, min_mapq, count_multimappers, primary, allow_multi_overlap, mode: z,
                             require_both_ends, exclude_chimeric, check_pe_dist, min_frag_len, max_frag_len,
                         });
                     }
@@ -626,7 +899,7 @@ fn main() -> Result<()> {
                 Some(p) => read_fasta_seqs(p)?,
                 None => Vec::new(),
             };
-            let params = cleaver_core::fastp::FastpParams {
+            let params = cleaver::fastp::FastpParams {
                 disable_adapter: disable_adapter_trimming,
                 adapter_r1: adapter_sequence.map(|s| s.into_bytes()),
                 adapter_r2: adapter_sequence_r2.map(|s| s.into_bytes()),
@@ -644,16 +917,16 @@ fn main() -> Result<()> {
                 phred64, reads_to_process,
             };
             let report = match (&in2, &out2) {
-                (Some(i2), Some(o2)) => cleaver_core::fastp::run_pe(&in1, &out1, i2, o2, &params)?,
-                (None, None) => cleaver_core::fastp::run_se(&in1, &out1, &params)?,
+                (Some(i2), Some(o2)) => cleaver::fastp::run_pe(&in1, &out1, i2, o2, &params)?,
+                (None, None) => cleaver::fastp::run_se(&in1, &out1, &params)?,
                 _ => anyhow::bail!("paired-end requires both --in2 and --out2"),
             };
             finish_fastp(report, &json)
         }
 
         Cmd::Demux { input, output, queries, window, min_score, min_score_diff, max_errors, no_trim, one_end } => {
-            let barcodes = cleaver_core::demux::read_barcodes(&queries)?;
-            let params = cleaver_core::demux::DemuxParams {
+            let barcodes = cleaver::demux::read_barcodes(&queries)?;
+            let params = cleaver::demux::DemuxParams {
                 window,
                 min_score,
                 min_score_diff,
@@ -661,7 +934,7 @@ fn main() -> Result<()> {
                 trim: !no_trim,
                 both_ends: !one_end,
             };
-            let stats = cleaver_core::demux::demux_file(&input, &output, &barcodes, &params)?;
+            let stats = cleaver::demux::demux_file(&input, &output, &barcodes, &params)?;
             let rate = if stats.total > 0 { stats.classified as f64 / stats.total as f64 * 100.0 } else { 0.0 };
             println!("  {} barcode(s) scanned over {} reads", barcodes.len(), stats.total);
             println!("  classified  : {:>10} ({:>5.1}%)", stats.classified, rate);
@@ -673,6 +946,8 @@ fn main() -> Result<()> {
             Ok(())
         }
 
+        Cmd::Samtools { cmd } => run_samtools(cmd),
+
         Cmd::Doctor => doctor::run(),
 
         Cmd::Info => {
@@ -682,6 +957,138 @@ fn main() -> Result<()> {
 
         Cmd::Version => {
             print_version();
+            Ok(())
+        }
+    }
+}
+
+fn fmt_is_bam(fmt: &str) -> Result<bool> {
+    match fmt.to_ascii_lowercase().as_str() {
+        "bam" | "b" => Ok(true),
+        "sam" | "s" => Ok(false),
+        other => anyhow::bail!("unknown output format '{other}' (use sam or bam)"),
+    }
+}
+
+fn run_samtools(cmd: SamCmd) -> Result<()> {
+    use cleaver::samtools as st;
+    match cmd {
+        SamCmd::View {
+            input, output, bam, count, header_only, require, exclude, min_mapq, region, subsample,
+        } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let (frac, seed) = match subsample {
+                Some(s) => (Some(s.fract().max(0.0)), s.floor().max(0.0) as u64),
+                None => (None, 0),
+            };
+            let p = st::ViewParams {
+                filter: st::Filter { require, exclude, min_mapq },
+                count,
+                header_only,
+                no_header: false,
+                region,
+                subsample: frac,
+                seed,
+                output,
+                bam,
+            };
+            let n = st::view(&input, in_fmt, &p)?;
+            if !count && !header_only {
+                eprintln!("{n} record(s) written");
+            }
+            Ok(())
+        }
+        SamCmd::Sort { input, output, by_name, format, threads: _ } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let bam = fmt_is_bam(&format)?;
+            let n = st::sort(&input, in_fmt, output.as_deref(), by_name, bam)?;
+            eprintln!("sorted {n} record(s)");
+            Ok(())
+        }
+        SamCmd::Index { input, output } => {
+            let out = st::index(&input, output.as_deref())?;
+            eprintln!("wrote {}", out.display());
+            Ok(())
+        }
+        SamCmd::Fastq { input, output, require, exclude, min_mapq, out1, out2, singleton, out0, no_suffix } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let p = st::FastxParams {
+                filter: st::Filter { require, exclude, min_mapq },
+                fasta: false,
+                out1,
+                out2,
+                singleton,
+                out0,
+                output,
+                no_suffix,
+            };
+            let s = st::fastx(&input, in_fmt, &p)?;
+            eprintln!(
+                "{} read(s): R1 {}, R2 {}, singleton {}, single {}",
+                s.total, s.read1, s.read2, s.singletons, s.single
+            );
+            Ok(())
+        }
+        SamCmd::Fasta { input, output, require, exclude, min_mapq, out1, out2, singleton, out0, no_suffix } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let p = st::FastxParams {
+                filter: st::Filter { require, exclude, min_mapq },
+                fasta: true,
+                out1,
+                out2,
+                singleton,
+                out0,
+                output,
+                no_suffix,
+            };
+            let s = st::fastx(&input, in_fmt, &p)?;
+            eprintln!("{} read(s) written", s.total);
+            Ok(())
+        }
+        SamCmd::Flagstat { input } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let fs = st::flagstat(&input, in_fmt)?;
+            print!("{}", fs.report());
+            Ok(())
+        }
+        SamCmd::Idxstats { input } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            for (name, len, mapped, unmapped) in st::idxstats(&input, in_fmt)? {
+                println!("{name}\t{len}\t{mapped}\t{unmapped}");
+            }
+            Ok(())
+        }
+        SamCmd::Merge { output, format, inputs } => {
+            let bam = fmt_is_bam(&format)?;
+            let n = st::merge(&inputs, output.as_deref(), bam)?;
+            eprintln!("merged {n} record(s) from {} file(s)", inputs.len());
+            Ok(())
+        }
+        SamCmd::Faidx { fasta, output, regions } => {
+            st::faidx(&fasta, &regions, output.as_deref())?;
+            Ok(())
+        }
+        SamCmd::Depth { input, output, min_mapq, region } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let p = st::DepthParams { min_mapq, region, output };
+            st::depth(&input, in_fmt, &p)?;
+            Ok(())
+        }
+        SamCmd::Mpileup { input, output, reference, min_mapq, min_baseq, region } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let p = st::MpileupParams { min_mapq, min_baseq, region, reference, output };
+            st::mpileup(&input, in_fmt, &p)?;
+            Ok(())
+        }
+        SamCmd::Pileup { input, output, reference, min_mapq, min_baseq, region } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            let p = st::MpileupParams { min_mapq, min_baseq, region, reference, output };
+            st::pileup(&input, in_fmt, &p)?;
+            Ok(())
+        }
+        SamCmd::Coverage { input, output, region } => {
+            let in_fmt = cleaver::formats::detect(&input)?;
+            st::coverage(&input, in_fmt, &st::CoverageParams { region, output })?;
             Ok(())
         }
     }
@@ -738,7 +1145,7 @@ fn read_fasta_seqs(path: &Path) -> Result<Vec<Vec<u8>>> {
 }
 
 /// Write the fastp JSON report and print a concise stdout summary.
-fn finish_fastp(report: cleaver_core::fastp::Report, json: &Path) -> Result<()> {
+fn finish_fastp(report: cleaver::fastp::Report, json: &Path) -> Result<()> {
     std::fs::write(json, report.to_json())
         .with_context(|| format!("writing JSON report '{}'", json.display()))?;
     let (b, a) = (&report.before, &report.after);
