@@ -391,7 +391,7 @@ files against a GTF/GFF annotation. Flag names mirror featureCounts and VERSE.
 **VERSE assignment modes (`-z`).** These select how a read's overlap with the
 annotation is resolved:
 
-| `-z` | Name | Behaviour |
+| `-z` | Name | Behavior |
 |---|---|---|
 | `0` | featureCounts | any meta-feature overlapping the read (default semantics). |
 | `1` | htseq union | union of overlapping features; >1 gene ⇒ ambiguous. |
@@ -882,56 +882,6 @@ Cleaver does not implement BAQ (base alignment quality) realignment, which
 samtools applies by default and which changes base qualities near indels. All
 other comparisons use each tool's own defaults.
 
-Detail on the earlier items:
-
-
-1. **Duplicate `noodles-sam` in the dependency tree** — pinning `noodles-sam 0.50`
-   while `noodles-bam 0.55` requires `0.52` put *two* copies of the crate in the
-   graph, so `alignment::io::Write` and `RecordBuf: Record` came from different
-   crates and didn't match (`finish`/`write_alignment_record` "not satisfied").
-   Fixed by aligning to `0.52`.
-2. **Silent MSRV walls** — `indexmap 2.14` and `rayon-core 1.13` require
-   edition2024 / rustc ≥ 1.80. Pinned to `2.2.6` and `1.12.1`.
-3. **Wrong unit-test expectation in the base counter** — the FASTA `stats` test
-   asserted `C:4 / total:15 / GC:7÷13` for input `ACGT|AACC|GGTTNN`, which
-   actually has `C:3 / total:14 / GC:0.5`; the kernel was right, the test was
-   miscounted. Corrected the expectation (caught by running the suite, not by
-   eye).
-4. **Region coordinates failed silently** — the `samtools` region parser used
-   `parse().unwrap_or(...)`, so a typo like `chr1:foo-bar` fell back to *the whole
-   chromosome* instead of erroring, and `chr1:200-100` (start > end) was accepted.
-   Both the alignment parser (`view`/`mpileup`/`coverage`/`depth`) and the FASTA
-   `faidx` parser now reject non-numeric coordinates and reversed ranges with a
-   clear message; the FASTA path also guards a `linebases == 0` division. Added a
-   regression test.
-5. **Silent truncation of mismatched paired-end input** — `fastp` PE mode broke
-   out of its read loop as soon as *either* mate file ended, so a truncated R2 (or
-   an over-long R1) would drop reads with no notice. Pairing was always correct
-   (mates are read in lockstep and it stops at the shorter file), but the dropped
-   reads were invisible. It now emits a `warning: read1 and read2 have different
-   numbers of records …` and reports how many pairs were processed. Added a
-   regression test.
-
-Verified correct, no bug: the FASTA engine is byte-identical to the Python
-original; BAM chunks re-read as valid BAM with record counts summing exactly
-(50k and 300k runs); SAM chunks each carry the header. The following edge cases
-were audited and are now pinned by regression tests: `fastp` on empty input,
-length-1 reads, all-N reads, sub-adapter-length reads, and reads fully consumed
-by adapter trimming (all filtered by the default min-length, no panic), plus a
-gzip→gzip round-trip; `demux` on reads shorter than a barcode and on empty reads
-(both route to `unclassified` with no panic); and `count` on a read aligned to a
-reference absent from the annotation (tallied as `no_feature`). As part of this,
-the two provably-safe `unwrap()`s in `demux` were rewritten to be safe *by
-construction* (the best-match is carried as a single bundled `Option`, and the
-per-barcode writer is fetched via the `BTreeMap` `Entry` API), so no panic path
-remains even in principle.
-
-Honest sharp edges: a wrong/never-matching delimiter yields one giant chunk
-(mitigated by the start-of-line default); memory scales with the longest *line*,
-not the file; `--contains` is an O(n·m) scan; and two inputs sharing a stem
-(e.g. `x.ffn` and `x.ffn.gz`) write the same chunk names into one `-o` dir —
-split same-stem inputs separately.
-
 ---
 
 # 🔧 Build
@@ -961,22 +911,6 @@ cudarc 0.12.1 is edition 2021 and declares no MSRV, so the GPU feature does not
 by itself require a newer rustc than the rest of the crate. The optional
 `rustyomestats` feature is the one exception: that crate needs rustc ≥ 1.88, so it
 is off by default and the equivalent N/L metrics are computed natively instead.
-
-## ✅ Correctness
-
-`#![forbid(unsafe_code)]` on the engine library (the binary's GPU launch is the
-only `unsafe`, behind `--features gpu`). Tests cover FASTA/FASTQ losslessness and
-boundary behaviour, SAM header replication, SAM↔BAM round-trips, BAM-chunk
-validity, FASTQ→FASTA, mapped/unmapped filtering and partitioning, base
-composition / GC, **genome stats (N50/L50/N90, lengths, median)**, GTF/GFF
-parsing, CIGAR intron-splitting, and **count assignment** (unique / ambiguous /
-no-feature, strandedness, multimapper and MAPQ filters, and the union / strict /
-nonempty overlap modes). End-to-end (verified here): all FASTA variants, FASTQ,
-gzip, and multi-file parallel split reassemble byte-identical; `--partition`
-routes every record by its `0x4` flag (6 mapped + 4 unmapped, lossless); `stats`
-emits the genome table across files; and `count` produces an identical
-gene × sample matrix and `.summary` whether run on the in-node pool or across the
-HydraMPP backend with devices pinned per task.
 
 ---
 
