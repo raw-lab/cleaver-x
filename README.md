@@ -1,4 +1,4 @@
-# ✂️ Cleaver
+# ✂️ Cleaver-X
 
 ### *Record-aware splitting, conversion, QC, counting and alignment utilities — at streaming speed, in pure Rust.*
 
@@ -19,9 +19,9 @@
 
 ---
 
-# 🔬 What is Cleaver?
+# 🔬 What is Cleaver-X?
 
-**Cleaver** is a high-performance bioinformatics toolkit written in **Rust** that
+**Cleaver-X** is a high-performance bioinformatics toolkit written in **Rust** that
 handles the everyday sequence and alignment formats:
 
 * 🧬 FASTA (and every variant: `.fa .fna .ffn .faa .frn .mpfa .fas`)
