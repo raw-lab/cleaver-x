@@ -19,13 +19,13 @@ command -v cargo >/dev/null 2>&1 || {
     exit 1
 }
 
-echo ">> building cleaver (release${FEATURES:+, features: $FEATURES}) ..."
+echo ">> building Cleaver-X (release${FEATURES:+, features: $FEATURES}) ..."
 if [ -n "$FEATURES" ]; then
     cargo build --release --locked --features "$FEATURES"
 else
     cargo build --release --locked
 fi
-BIN="$HERE/target/release/cleaver"
+BIN="$HERE/target/release/cleaver-x"
 [ -x "$BIN" ] || { echo "error: build did not produce $BIN" >&2; exit 1; }
 
 on_path() { case ":$PATH:" in *":$1:"*) return 0 ;; *) return 1 ;; esac; }
@@ -41,8 +41,10 @@ else
 fi
 
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$BIN" "$INSTALL_DIR/cleaver"
-echo ">> installed: $INSTALL_DIR/cleaver"
+install -m 0755 "$BIN" "$INSTALL_DIR/cleaver-x"
+# backwards-compatible alias: `cleaver` keeps working after the rename
+ln -sf cleaver-x "$INSTALL_DIR/cleaver"
+echo ">> installed: $INSTALL_DIR/cleaver-x (with a 'cleaver' alias)"
 
 if ! on_path "$INSTALL_DIR"; then
     # Never edit the user's shell rc files behind their back: print the line and
@@ -50,7 +52,7 @@ if ! on_path "$INSTALL_DIR"; then
     if [ "${CLEAVER_EDIT_RC:-0}" = "1" ]; then
         SHELL_RC="$HOME/.bashrc"
         [ -n "${ZSH_VERSION:-}" ] && SHELL_RC="$HOME/.zshrc"
-        printf '\n# added by cleaver install.sh\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$SHELL_RC"
+        printf '\n# added by Cleaver-X install.sh\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$SHELL_RC"
         echo ">> appended a PATH export to $SHELL_RC (CLEAVER_EDIT_RC=1)"
     else
         echo ">> NOTE: $INSTALL_DIR is not on your PATH. Add this line to your shell rc:"
@@ -60,12 +62,12 @@ fi
 
 # Verify for real: a failure here must fail the install, not be swallowed.
 echo ">> verifying ..."
-if ! "$INSTALL_DIR/cleaver" version; then
-    echo "error: installed binary failed to run: $INSTALL_DIR/cleaver" >&2
+if ! "$INSTALL_DIR/cleaver-x" version; then
+    echo "error: installed binary failed to run: $INSTALL_DIR/cleaver-x" >&2
     exit 1
 fi
-if ! "$INSTALL_DIR/cleaver" doctor; then
-    echo "error: 'cleaver doctor' reported a failure (see above)" >&2
+if ! "$INSTALL_DIR/cleaver-x" doctor; then
+    echo "error: 'cleaver-x doctor' reported a failure (see above)" >&2
     exit 1
 fi
-echo ">> done. cleaver is installed and healthy."
+echo ">> done. Cleaver-X is installed and healthy."

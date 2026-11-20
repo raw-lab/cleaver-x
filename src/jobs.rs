@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use cleaver::{align, annotation, chunk_file, count, formats, genome, Config, Format, Match, Mode};
+use cleaver_x::{align, annotation, chunk_file, count, formats, genome, Config, Format, Match, Mode};
 
 use crate::gpu;
 
@@ -84,8 +84,8 @@ pub fn do_split(job: SplitJob) -> SplitOutcome {
                 let cfg = Config { chunk_size: job.chunk_size, mode: Mode::Lines { n: 4 } };
                 chunk_file(&job.input, &job.outdir, &cfg)?.chunks.len()
             }
-            Format::Sam => align::split_sam(&job.input, &job.outdir, job.records)?.len(),
-            Format::Bam => align::split_bam(&job.input, &job.outdir, job.records)?.len(),
+            Format::Sam => align::split_sam(&job.input, &job.outdir, job.records, job.chunk_size)?.len(),
+            Format::Bam => align::split_bam(&job.input, &job.outdir, job.records, job.chunk_size)?.len(),
         };
         Ok((fmt, n))
     };

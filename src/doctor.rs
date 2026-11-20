@@ -12,8 +12,8 @@ use std::io::Write;
 
 use anyhow::{anyhow, Result};
 
-use cleaver::{align, annotation, chunk_file, compute, count, formats, Config, Format, Match, Mode};
-use cleaver::genome;
+use cleaver_x::{align, annotation, chunk_file, compute, count, formats, Config, Format, Match, Mode};
+use cleaver_x::genome;
 
 use crate::gpu;
 
@@ -41,7 +41,7 @@ fn concat(paths: &[std::path::PathBuf]) -> Result<Vec<u8>> {
 
 pub fn run() -> Result<()> {
     print!("{}", crate::BANNER);
-    println!("cleaver doctor — self-test\n");
+    println!("cleaver-x doctor — self-test\n");
 
     // ---- build / environment ------------------------------------------------
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
@@ -201,13 +201,13 @@ pub fn run() -> Result<()> {
               @c\nACGTACGTACGTACGTACGT\n+\n####################\n",
         )?;
         let out = tmp.join("d.out.fastq");
-        let p = cleaver::fastp::FastpParams {
+        let p = cleaver_x::fastp::FastpParams {
             length_required: 10,
             qualified_quality_phred: 20,
             unqualified_percent_limit: 50.0,
             ..Default::default()
         };
-        let rep = cleaver::fastp::run_se(&fq, &out, &p)?;
+        let rep = cleaver_x::fastp::run_se(&fq, &out, &p)?;
         if (rep.filter.passed, rep.filter.too_short, rep.filter.low_quality) != (1, 1, 1) {
             return Err(anyhow!(
                 "expected 1 pass / 1 short / 1 low-qual, got {}/{}/{}",
@@ -229,13 +229,13 @@ pub fn run() -> Result<()> {
             b"@r1\nAAAACCCCGGGGTTTTACGTACGTACGTAC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n\
               @r2\nGTGTGTGTGTGTGTGTGTGTACGTACGTAC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n",
         )?;
-        let bcs = cleaver::demux::read_barcodes(&bcf)?;
-        let p = cleaver::demux::DemuxParams {
+        let bcs = cleaver_x::demux::read_barcodes(&bcf)?;
+        let p = cleaver_x::demux::DemuxParams {
             both_ends: false,
             min_score: 0.85,
             ..Default::default()
         };
-        let st = cleaver::demux::demux_file(&reads, &tmp.join("dx_out"), &bcs, &p)?;
+        let st = cleaver_x::demux::demux_file(&reads, &tmp.join("dx_out"), &bcs, &p)?;
         if (st.classified, st.unclassified) != (1, 1) {
             return Err(anyhow!(
                 "expected 1 classified / 1 unclassified, got {}/{}",
@@ -248,7 +248,7 @@ pub fn run() -> Result<()> {
 
     // ---- samtools (view/sort/index/flagstat/fastq) -------------------------
     run("samtools (view/sort/idx)", &mut || {
-        use cleaver::samtools as st;
+        use cleaver_x::samtools as st;
         let s = tmp.join("st.sam");
         fs::write(
             &s,
@@ -278,7 +278,7 @@ d\t16\tchr2\t200\t30\t10M\t*\t0\t0\tCCCCCCCCCC\tIIIIIIIIII\n",
             return Err(anyhow!("BAI index is empty"));
         }
         // the sorted BAM's index must read back as a valid BAI
-        if cleaver::samtools::read_bai_ref_count(&bai)? == 0 {
+        if cleaver_x::samtools::read_bai_ref_count(&bai)? == 0 {
             return Err(anyhow!("BAI has no reference sequences"));
         }
         // a coordinate sort must stamp @HD SO:coordinate
@@ -343,7 +343,7 @@ d\t16\tchr2\t200\t30\t10M\t*\t0\t0\tCCCCCCCCCC\tIIIIIIIIII\n",
     let _ = fs::remove_dir_all(&tmp);
     println!("\n{pass}/{total} checks passed.");
     if pass == total {
-        println!("cleaver is healthy. ✓");
+        println!("Cleaver-X is healthy. ✓");
         Ok(())
     } else {
         Err(anyhow!("{} check(s) failed", total - pass))

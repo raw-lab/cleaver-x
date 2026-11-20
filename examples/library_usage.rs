@@ -1,9 +1,9 @@
-//! Embedding cleaver as a library: genome stats, flag tallies, size parsing.
+//! Embedding Cleaver-X as a library: genome stats, flag tallies, size parsing.
 //!
 //! Run with:  cargo run --example library_usage -- genome.fna aln.bam
 
 use anyhow::Result;
-use cleaver::{count, genome, parse_size, samtools, Format};
+use cleaver_x::{count, genome, parse_size, samtools, Format};
 use std::path::Path;
 
 fn main() -> Result<()> {

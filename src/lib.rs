@@ -23,6 +23,35 @@ use anyhow::{bail, Context, Result};
 mod size;
 pub use size::parse_size;
 
+/// The stem cleaver derives chunk names from: the file name with any trailing
+/// `.gz`/`.bgz` and then the format extension removed (`x.ffn.gz` -> `x`).
+///
+/// Two inputs with the same stem would write the same chunk files into one
+/// output directory, so callers that split several inputs into a shared
+/// directory must reject collisions (see [`find_stem_collision`]).
+pub fn chunk_stem(path: &std::path::Path) -> String {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("chunk");
+    let base = name
+        .strip_suffix(".gz")
+        .or_else(|| name.strip_suffix(".bgz"))
+        .unwrap_or(name);
+    base.rsplit_once('.').map(|(s, _)| s).unwrap_or(base).to_string()
+}
+
+/// First pair of inputs that would collide on chunk names, as
+/// `(earlier_index, later_index, stem)`. `None` when every stem is unique.
+pub fn find_stem_collision(inputs: &[std::path::PathBuf]) -> Option<(usize, usize, String)> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, p) in inputs.iter().enumerate() {
+        let st = chunk_stem(p);
+        if let Some(&prev) = seen.get(&st) {
+            return Some((prev, i, st));
+        }
+        seen.insert(st, i);
+    }
+    None
+}
+
 pub mod align;
 pub mod annotation;
 pub mod compute;
@@ -323,5 +352,29 @@ mod tests {
         };
         let stats = chunk_file(&inp, &d.join("out"), &cfg).unwrap();
         assert_eq!(cat(&stats.chunks), data);
+    }
+
+    #[test]
+    fn stem_collision_is_detected() {
+        use std::path::PathBuf;
+        // `x.ffn` and `x.ffn.gz` both reduce to the stem `x`, so both would
+        // write x.00000.* into one -o dir — the earlier file used to be
+        // silently overwritten.
+        assert_eq!(chunk_stem(Path::new("x.ffn")), "x");
+        assert_eq!(chunk_stem(Path::new("x.ffn.gz")), "x");
+        assert_eq!(chunk_stem(Path::new("/a/b/reads.fastq.bgz")), "reads");
+        assert_eq!(chunk_stem(Path::new("noext")), "noext");
+
+        let clash = vec![PathBuf::from("x.ffn"), PathBuf::from("x.ffn.gz")];
+        assert_eq!(find_stem_collision(&clash), Some((0, 1, "x".to_string())));
+
+        // same name from different directories also collides
+        let dirs = vec![PathBuf::from("a/g.fna"), PathBuf::from("b/g.fna")];
+        assert!(find_stem_collision(&dirs).is_some());
+
+        // distinct stems are fine
+        let ok = vec![PathBuf::from("x.ffn"), PathBuf::from("y.ffn"), PathBuf::from("z.fq.gz")];
+        assert_eq!(find_stem_collision(&ok), None);
+        assert_eq!(find_stem_collision(&[]), None);
     }
 }

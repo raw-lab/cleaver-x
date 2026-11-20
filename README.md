@@ -5,7 +5,7 @@
 <div align="center">
 
 ![Rust](https://img.shields.io/badge/Rust-1.75%2B-black?logo=rust)
-![Crates.io](https://img.shields.io/crates/v/cleaver?logo=rust)
+![Crates.io](https://img.shields.io/crates/v/Cleaver-X?logo=rust)
 ![License](https://img.shields.io/badge/license-CC_BY--NC_4.0-blue)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-success)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success)
@@ -76,9 +76,9 @@ with no C/C++ or Python dependencies.
 
 ---
 
-# ⚡ Why Cleaver?
+# ⚡ Why Cleaver-X?
 
-| Feature | Cleaver |
+| Feature | Cleaver-X |
 | --- | --- |
 | 🧬 Never splits a record in half | ✅ |
 | 🌊 Constant-memory streaming | ✅ |
@@ -99,8 +99,20 @@ with no C/C++ or Python dependencies.
 |---|---|---|---|
 | FASTA | `.fasta .fa .fna .ffn .faa .frn .mpfa .fas` | size (`--chunk-size`) | streaming, byte-level |
 | FASTQ | `.fastq .fq` | size (`--chunk-size`, 4-line aware) | streaming, byte-level |
-| SAM | `.sam` | records (`--records`) | text, header replicated |
-| BAM | `.bam` | records (`--records`) | `noodles` (BGZF) |
+| SAM | `.sam` | records (`-r`) **or** size (`-c`) | text, header replicated |
+| BAM | `.bam` | records (`-r`) **or** size (`-c`) | `noodles` (BGZF) |
+
+**Alignment files honour both limits.** For SAM/BAM a new chunk starts when the
+current one reaches `--records` records **or** `--chunk-size` bytes, whichever
+comes first — so `-c 200M` splits a BAM by size, `-r 100000` splits it by record
+count, and giving both caps each chunk at whichever limit is hit first. Sizes are
+checked at record boundaries (and for BAM the byte counter trails the open BGZF
+block), so chunks land near the target rather than exactly on it, and a chunk
+size smaller than one BGZF block cannot split a BAM further.
+
+> If a split returns a single chunk, the input is simply under the cap: a BAM
+> with 60,000 records will not split at `-r 100000`. Lower the cap (or use `-c`)
+> to get more chunks.
 
 `.gz` inputs are decompressed transparently. Format is auto-detected from the
 extension, falling back to a content sniff. Chunks keep the input's extension
@@ -112,7 +124,7 @@ extension, falling back to a content sniff. Chunks keep the input's extension
 
 ```mermaid
 flowchart LR
-    A["FASTA / FASTQ / SAM / BAM"] --> B["Cleaver engine (streaming, record-aware)"]
+    A["FASTA / FASTQ / SAM / BAM"] --> B["Cleaver-X engine (streaming, record-aware)"]
     B --> C["split · convert · stats"]
     B --> D["fastp · demux · count"]
     B --> E["samtools suite"]
@@ -152,30 +164,37 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup default stable
 ```
 
-Cleaver needs **rustc 1.75+**. No `rustup` is required if your distro already
+Cleaver-X needs **rustc 1.75+**. No `rustup` is required if your distro already
 ships a recent `cargo`/`rustc`.
 
 ---
 
-## 2️⃣ Install Cleaver
+## 2️⃣ Install Cleaver-X
 
-### From crates.io
+### From crates.io (recommended)
 
 ```bash
-cargo install cleaver
-export PATH="$HOME/.cargo/bin:$PATH"     # if not already on PATH
+cargo install Cleaver-X
+export PATH="$HOME/.cargo/bin:$PATH"     # if ~/.cargo/bin is not already on PATH
+```
+
+This installs the **`cleaver-x`** binary into `~/.cargo/bin`. If you have older
+scripts that call `cleaver`, add the alias once:
+
+```bash
+ln -sf "$HOME/.cargo/bin/cleaver-x" "$HOME/.cargo/bin/cleaver"
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/raw-lab/cleaver
-cd cleaver
+git clone https://github.com/raw-lab/cleaver-x
+cd cleaver-x
 
 cargo install --path .
 ```
 
-### One-shot installer (builds release + puts `cleaver` on your PATH)
+### One-shot installer (builds release + puts `cleaver-x` on your PATH)
 
 ```bash
 ./install.sh                     # default backend
@@ -184,8 +203,8 @@ cargo install --path .
 DEST=/usr/local/bin ./install.sh # choose the install dir
 ```
 
-> `cargo build` alone does **not** put `cleaver` on your `PATH` — it writes
-> `target/release/cleaver`. Use one of the three routes above, or run it by full
+> `cargo build` alone does **not** put `cleaver-x` on your `PATH` — it writes
+> `target/release/cleaver-x`. Use one of the three routes above, or run it by full
 > path.
 
 ---
@@ -207,9 +226,23 @@ cudarc 0.12 supports (**CUDA ≤ 12.6**).
 ## 4️⃣ Verify the Install
 
 ```bash
-cleaver doctor      # end-to-end self-test, exits non-zero on any failure
-cleaver --version
+cleaver-x --version   # -> cleaver-x 1.0.2
+cleaver-x doctor      # end-to-end self-test; exits non-zero on any failure
 ```
+
+`doctor` writes tiny inputs to a temp dir and runs the real engine end to end, so
+a green `13/13 checks passed. Cleaver-X is healthy. ✓` means the install works —
+not just that the binary launched.
+
+**Troubleshooting**
+
+| Symptom | Fix |
+|---|---|
+| `cleaver-x: command not found` | `~/.cargo/bin` is not on `PATH` — `export PATH="$HOME/.cargo/bin:$PATH"` |
+| `cargo: command not found` | Install Rust (step 1), or `apt install cargo rustc` |
+| `error: package requires rustc 1.xx` | Update the toolchain: `rustup update stable` |
+| `cargo build` worked but no `cleaver-x` on PATH | `cargo build` only writes `target/release/cleaver-x`; use `cargo install` or `./install.sh` |
+| CUDA build fails with "Must specify one of the following features" | Pin the toolkit: `--features gpu,cudarc/cuda-12040` (cudarc 0.12 supports CUDA ≤ 12.6) |
 
 ---
 
@@ -217,53 +250,53 @@ cleaver --version
 
 ```bash
 # split — auto-detects format per file; runs files in parallel (-t, 0 = all cores)
-cleaver split reads.fastq genome.fna aln.bam -o out/ -c 256M -r 1000000
+cleaver-x split reads.fastq genome.fna aln.bam -o out/ -c 256M -r 1000000
 
 # every FASTA variant, every FASTQ; gzip transparent
-cleaver split contigs.ffn proteins.faa reads.fq.gz -o out/ -c 100M
+cleaver-x split contigs.ffn proteins.faa reads.fq.gz -o out/ -c 100M
 
 # convert — direction inferred from extensions
-cleaver convert aln.sam aln.bam            # SAM -> BAM (BGZF)
-cleaver convert aln.bam aln.sam            # BAM -> SAM
-cleaver convert reads.fastq reads.fasta    # FASTQ -> FASTA (drops quality)
+cleaver-x convert aln.sam aln.bam            # SAM -> BAM (BGZF)
+cleaver-x convert aln.bam aln.sam            # BAM -> SAM
+cleaver-x convert reads.fastq reads.fasta    # FASTQ -> FASTA (drops quality)
 
 # convert with mapped/unmapped selection (alignment inputs)
-cleaver convert aln.sam aln.bam --mapped-only      # keep only mapped reads
-cleaver convert aln.sam aln.bam --unmapped-only    # keep only unmapped reads
-cleaver convert aln.sam aln.bam --partition        # -> aln.mapped.bam + aln.unmapped.bam
+cleaver-x convert aln.sam aln.bam --mapped-only      # keep only mapped reads
+cleaver-x convert aln.sam aln.bam --unmapped-only    # keep only unmapped reads
+cleaver-x convert aln.sam aln.bam --partition        # -> aln.mapped.bam + aln.unmapped.bam
 
 # stats — genome/assembly statistics: N50/L50/N90, lengths, GC% (GPU base-comp if built --features gpu)
-cleaver stats genome.fna contigs.ffn reads.fq
+cleaver-x stats genome.fna contigs.ffn reads.fq
 
 # count — featureCounts/htseq/VERSE reads-per-feature from BAM/SAM vs a GTF/GFF
-cleaver count sampleA.bam sampleB.bam sampleC.bam -a genes.gtf -o counts.tsv
+cleaver-x count sampleA.bam sampleB.bam sampleC.bam -a genes.gtf -o counts.tsv
 #   -> counts.tsv (gene x sample matrix) + counts.tsv.summary (assignment categories)
 # VERSE modes: -z 0..5; multi-feature hierarchical/independent via -t 'exon;intron'
-cleaver count sample.bam -a genes.gtf -o counts.tsv -t 'exon;intron' --scheme hierarchical
+cleaver-x count sample.bam -a genes.gtf -o counts.tsv -t 'exon;intron' --scheme hierarchical
 
 # fastp — pure-Rust FASTQ preprocessing (adapter/quality/polyX trim + filtering, JSON report)
-cleaver fastp -i reads.fq.gz -o clean.fq.gz -a AGATCGGAAGAGC -g -q 20 -l 30 -j qc.json
-cleaver fastp -i R1.fq.gz -I R2.fq.gz -o R1.clean.fq.gz -O R2.clean.fq.gz -2 -c   # paired-end
+cleaver-x fastp -i reads.fq.gz -o clean.fq.gz -a AGATCGGAAGAGC -g -q 20 -l 30 -j qc.json
+cleaver-x fastp -i R1.fq.gz -I R2.fq.gz -o R1.clean.fq.gz -O R2.clean.fq.gz -2 -c   # paired-end
 
 # demux — pure-Rust ONT barcode demultiplexing (fit-align both ends, trim, split)
-cleaver demux -i reads.fq.gz -o demux/ -q barcodes.fasta --min-score 0.8
+cleaver-x demux -i reads.fq.gz -o demux/ -q barcodes.fasta --min-score 0.8
 
 # samtools — SAM/BAM utilities with samtools' exact -f/-F flag semantics
-cleaver samtools sort -o aln.sorted.bam aln.bam        # coordinate sort (-n = by name)
-cleaver samtools index aln.sorted.bam                  # build aln.sorted.bam.bai
-cleaver samtools fastq -f 4 -o unmapped.fq aln.bam     # extract unmapped reads to FASTQ
-cleaver samtools view -c -F 0x904 aln.bam              # count primary mapped records
-cleaver samtools flagstat aln.bam                      # flag category tallies
-cleaver samtools idxstats aln.sorted.bam               # per-reference mapped/unmapped
+cleaver-x samtools sort -o aln.sorted.bam aln.bam        # coordinate sort (-n = by name)
+cleaver-x samtools index aln.sorted.bam                  # build aln.sorted.bam.bai
+cleaver-x samtools fastq -f 4 -o unmapped.fq aln.bam     # extract unmapped reads to FASTQ
+cleaver-x samtools view -c -F 0x904 aln.bam              # count primary mapped records
+cleaver-x samtools flagstat aln.bam                      # flag category tallies
+cleaver-x samtools idxstats aln.sorted.bam               # per-reference mapped/unmapped
 
 # environment / accelerators / backend
-cleaver info
+cleaver-x info
 
 # health check (verify the install and every code path)
-cleaver doctor
+cleaver-x doctor
 
 # version
-cleaver --version          # or -v
+cleaver-x --version          # or -v
 ```
 
 ## 🌍 Scaling across a cluster (HydraMPP)
@@ -276,11 +309,11 @@ crates.io ([`hydra-mpp`](https://crates.io/crates/hydra-mpp)), enabled by a feat
 cargo build --release --features hydra
 
 # head node (workers connect in); then split/stats fan out across the cluster
-cleaver split *.fna -o out/ --head
+cleaver-x split *.fna -o out/ --head
 # each worker joins the head:
-cleaver split --client 10.0.0.1
+cleaver-x split --client 10.0.0.1
 # simulate GPU scheduling on a CPU-only box (devices get pinned per task):
-cleaver stats *.fna --sim-gpus 4
+cleaver-x stats *.fna --sim-gpus 4
 ```
 
 Splitting bounds map to each family's natural unit: **sequence** files by size
@@ -293,9 +326,9 @@ BAM, a finalised BGZF EOF block), so each chunk is an independently valid file.
 
 ---
 
-# 🩺 Self-test (`cleaver doctor`)
+# 🩺 Self-test (`cleaver-x doctor`)
 
-`cleaver doctor` verifies the install end-to-end — it writes tiny inputs to a
+`cleaver-x doctor` verifies the install end-to-end — it writes tiny inputs to a
 temp dir and exercises the real engine (FASTA split + lossless reassembly,
 FASTQ→FASTA, SAM↔BAM round-trip, mapped/unmapped partition, base-composition
 stats, genome N50, **feature counting**, **fastp QC**, **barcode demux**,
@@ -304,7 +337,7 @@ GPU detection, and — with `--features hydra` — a live local HydraMPP task),
 printing a pass/fail line per check and exiting non-zero on any failure:
 
 ```text
-$ cleaver doctor
+$ cleaver-x doctor
   [ ok ] fasta split            3 chunks, byte-identical reassembly
   [ ok ] sam -> bam -> sam      3 records preserved each way (noodles/BGZF)
   [ ok ] mapped/unmapped split  2 mapped + 1 unmapped, routed by 0x4 flag
@@ -314,7 +347,7 @@ $ cleaver doctor
   [ ok ] samtools (view/sort/idx) view -f4/-F4, sort(+SO)->bam, index (BAI), flagstat, fastq, mpileup, coverage
   [ ok ] hydra engine           local runtime ran 5 tasks correctly
   ...
-  13/13 checks passed.  cleaver is healthy. ✓
+  13/13 checks passed.  Cleaver-X is healthy. ✓
 ```
 
 ---
@@ -326,7 +359,7 @@ $ cleaver doctor
 `--head`, `--client <ADDR>`, `--cpus <N>`, `--sim-gpus <N>`, `--port <PORT>` are
 available globally.
 
-## `cleaver split <INPUTS>…`
+## `cleaver-x split <INPUTS>…`
 Record-aware chunking, one task per file.
 
 | Flag | Default | Meaning |
@@ -337,7 +370,7 @@ Record-aware chunking, one task per file.
 | `-t, --threads <N>` | `0` | In-node worker threads (0 = all cores). |
 | `--format <fasta\|fastq\|sam\|bam>` | auto | Force a format. |
 
-## `cleaver convert <INPUT> <OUTPUT>`
+## `cleaver-x convert <INPUT> <OUTPUT>`
 SAM↔BAM (BGZF) and FASTQ→FASTA; the target is taken from `<OUTPUT>`'s extension.
 
 | Flag | Meaning |
@@ -346,7 +379,7 @@ SAM↔BAM (BGZF) and FASTQ→FASTA; the target is taken from `<OUTPUT>`'s extens
 | `--mapped-only` | Keep mapped records only. |
 | `--unmapped-only` | Keep unmapped records only. |
 
-## `cleaver stats <INPUTS>…`
+## `cleaver-x stats <INPUTS>…`
 Genome/assembly statistics for FASTA/FASTQ (rejects SAM/BAM). Per file and a
 `TOTAL`: sequence count, total bp, min/max/mean/median length, **N50 / L50 /
 N90**, GC%, and the compute device. Base composition runs on the GPU with
@@ -364,7 +397,7 @@ bio/polars/plotters and needs **rustc ≥ 1.88**.
 | `-t, --threads <N>` | `0` | In-node worker threads (0 = all cores). |
 | `--format <…>` | auto | Force a format. |
 
-## `cleaver count <INPUTS>… -a <GTF/GFF> -o <MATRIX>`
+## `cleaver-x count <INPUTS>… -a <GTF/GFF> -o <MATRIX>`
 featureCounts / htseq / **VERSE** reads-per-feature from **one or more** BAM/SAM
 files against a GTF/GFF annotation. Flag names mirror featureCounts and VERSE.
 
@@ -391,7 +424,7 @@ files against a GTF/GFF annotation. Flag names mirror featureCounts and VERSE.
 **VERSE assignment modes (`-z`).** These select how a read's overlap with the
 annotation is resolved:
 
-| `-z` | Name | Behavior |
+| `-z` | Name | Behaviour |
 |---|---|---|
 | `0` | featureCounts | any meta-feature overlapping the read (default semantics). |
 | `1` | htseq union | union of overlapping features; >1 gene ⇒ ambiguous. |
@@ -412,26 +445,26 @@ per-type `Assigned_<type>` row in priority order.
 
 ```bash
 # exons by gene across three BAMs, unstranded, drop MAPQ < 10
-cleaver count A.bam B.bam C.bam -a genes.gtf -o counts.tsv -Q 10
+cleaver-x count A.bam B.bam C.bam -a genes.gtf -o counts.tsv -Q 10
 
 # reverse-stranded library; count CDS grouped by gene; strict overlaps
-cleaver count *.bam -a anno.gff3 -o cds.tsv -s 2 -t CDS --mode strict
+cleaver-x count *.bam -a anno.gff3 -o cds.tsv -s 2 -t CDS --mode strict
 
 # VERSE intersection-nonempty, stranded (== ./verse -z 3 -s 1)
-cleaver count sample.bam -a genes.gtf -o nonempty.tsv -z 3 -s 1
+cleaver-x count sample.bam -a genes.gtf -o nonempty.tsv -z 3 -s 1
 
 # VERSE cover-length: never ambiguous unless tied
-cleaver count sample.bam -a genes.gtf -o cover.tsv -z 5
+cleaver-x count sample.bam -a genes.gtf -o cover.tsv -z 5
 
 # VERSE multi-feature, INDEPENDENT -> counts.exon.tsv + counts.intron.tsv
-cleaver count sample.bam -a genes.gtf -o counts.tsv -t 'exon;intron'
+cleaver-x count sample.bam -a genes.gtf -o counts.tsv -t 'exon;intron'
 
 # VERSE multi-feature, HIERARCHICAL (exon wins, else intron, else intergenic)
-cleaver count sample.bam -a genes.gtf -o counts.tsv -t 'exon;intron;xine' \
+cleaver-x count sample.bam -a genes.gtf -o counts.tsv -t 'exon;intron;xine' \
     --scheme hierarchical
 
 # paired-end: both ends mapped, drop chimeras, fragments 50–600 bp
-cleaver count pe.bam -a genes.gtf -o pe.tsv -B -C -P -d 50 -D 600
+cleaver-x count pe.bam -a genes.gtf -o pe.tsv -B -C -P -d 50 -D 600
 ```
 
 **Counting model.** Each primary, mapped alignment passing the MAPQ / multimapper
@@ -449,7 +482,7 @@ than reconstructing fragments, so a properly-paired library is counted per mate,
 not de-duplicated per fragment. The annotation is parsed once per feature type
 per input; under `--features hydra` it must be readable on each worker node.
 
-## `cleaver fastp -i <IN> -o <OUT> [-I <IN2> -O <OUT2>]`
+## `cleaver-x fastp -i <IN> -o <OUT> [-I <IN2> -O <OUT2>]`
 A pure-Rust re-implementation of the [fastp](https://github.com/OpenGene/fastp)
 preprocessing pipeline: per-read trimming, filtering, paired-end overlap analysis,
 and a fastp-compatible JSON report. Short flags follow fastp.
@@ -524,14 +557,14 @@ gzip-compressed when the output path ends in `.gz`.
 
 ```bash
 # single-end: trim Illumina adapter + polyG, require Q20 over ≥90% of bases, ≥30 bp
-cleaver fastp -i reads.fastq.gz -o clean.fastq.gz \
+cleaver-x fastp -i reads.fastq.gz -o clean.fastq.gz \
     -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -g -q 20 -u 10 -l 30 -j qc.json
 
 # 3′ quality trim with a sliding window, then length filter
-cleaver fastp -i reads.fq -o clean.fq -3 -W 4 -M 25 -l 50
+cleaver-x fastp -i reads.fq -o clean.fq -3 -W 4 -M 25 -l 50
 
 # paired-end: detect adapters from the overlap and error-correct it
-cleaver fastp -i R1.fq.gz -I R2.fq.gz -o R1.clean.fq.gz -O R2.clean.fq.gz \
+cleaver-x fastp -i R1.fq.gz -I R2.fq.gz -o R1.clean.fq.gz -O R2.clean.fq.gz \
     -2 -c -g -j qc.json
 ```
 
@@ -546,7 +579,7 @@ the HTML report. SE adapter trimming needs an explicit `-a`/`--adapter-fasta`
 (there is no over-representation auto-detection); PE adapter detection works from
 the read overlap (`-2`).
 
-## `cleaver demux -i <READS> -o <DIR> -q <BARCODES>`
+## `cleaver-x demux -i <READS> -o <DIR> -q <BARCODES>`
 A pure-Rust ONT-style demultiplexer in the spirit of
 [barbell](https://github.com/rickbeeloo/barbell): each read's two ends are scanned
 for the best-matching barcode with a fitting (semi-global) edit-distance
@@ -572,13 +605,13 @@ and both end barcodes are trimmed when each end clears the threshold.
 
 ```bash
 # demultiplex with a native-barcode FASTA
-cleaver demux -i reads.fastq.gz -o demux/ -q native_bars.fasta
+cleaver-x demux -i reads.fastq.gz -o demux/ -q native_bars.fasta
 
 # stricter acceptance and a bigger margin between candidates
-cleaver demux -i reads.fq -o demux/ -q bars.fasta --min-score 0.85 --min-score-diff 0.1
+cleaver-x demux -i reads.fq -o demux/ -q bars.fasta --min-score 0.85 --min-score-diff 0.1
 
 # allow up to 3 edits in the barcode instead of an identity threshold
-cleaver demux -i reads.fq -o demux/ -q bars.fasta --max-errors 3
+cleaver-x demux -i reads.fq -o demux/ -q bars.fasta --max-errors 3
 ```
 
 A per-barcode read-count recap prints to stdout (classified / unclassified and a
@@ -591,7 +624,7 @@ database (supply barcodes with `-q`), and does not implement barbell's extended
 templates (fusion/break detection). Barcodes are matched independently at each
 end.
 
-## `cleaver samtools <SUBCOMMAND>`
+## `cleaver-x samtools <SUBCOMMAND>`
 A pure-Rust re-implementation of the most-used [samtools](https://www.htslib.org)
 subcommands, built on `noodles`. Filtering matches samtools **exactly**: a record
 is kept when `(flags & -f) == -f` **and** `(flags & -F) == 0`, so `-f 4` keeps
@@ -614,7 +647,7 @@ Both flag arguments accept decimal or `0x` hexadecimal.
 | `pileup` | `samtools pileup` | alias of `mpileup` |
 | `coverage` | `samtools coverage` | per-reference summary (numreads, covbases, mean depth/baseQ/mapQ) |
 
-**`view`** — `cleaver samtools view [opts] <IN>`
+**`view`** — `cleaver-x samtools view [opts] <IN>`
 
 | Option | Meaning |
 |---|---|
@@ -652,28 +685,28 @@ QC-fail / duplicate reads.
 
 ```bash
 # coordinate-sort then index (the classic pair)
-cleaver samtools sort -o aln.sorted.bam aln.bam
-cleaver samtools index aln.sorted.bam                 # -> aln.sorted.bam.bai
+cleaver-x samtools sort -o aln.sorted.bam aln.bam
+cleaver-x samtools index aln.sorted.bam                 # -> aln.sorted.bam.bai
 
 # extract unmapped reads to FASTQ (samtools fastq -f 4)
-cleaver samtools fastq -f 4 -o unmapped.fq aln.bam
+cleaver-x samtools fastq -f 4 -o unmapped.fq aln.bam
 
 # de-interleave a name-sorted BAM into R1/R2 FASTQ
-cleaver samtools sort -n -O bam -o byname.bam aln.bam
-cleaver samtools fastq --r1 R1.fq --r2 R2.fq -s single.fq byname.bam
+cleaver-x samtools sort -n -O bam -o byname.bam aln.bam
+cleaver-x samtools fastq --r1 R1.fq --r2 R2.fq -s single.fq byname.bam
 
 # count primary mapped records; extract one region as SAM
-cleaver samtools view -c -F 0x904 aln.bam
-cleaver samtools view -b -o chr1.bam -r chr1:1-100000 aln.sorted.bam
+cleaver-x samtools view -c -F 0x904 aln.bam
+cleaver-x samtools view -b -o chr1.bam -r chr1:1-100000 aln.sorted.bam
 
 # QC summaries; FASTA index + region fetch
-cleaver samtools flagstat aln.bam
-cleaver samtools idxstats aln.sorted.bam
-cleaver samtools faidx genome.fa && cleaver samtools faidx genome.fa chr1:1000-1050
+cleaver-x samtools flagstat aln.bam
+cleaver-x samtools idxstats aln.sorted.bam
+cleaver-x samtools faidx genome.fa && cleaver-x samtools faidx genome.fa chr1:1000-1050
 
 # text pileup against a reference; per-reference coverage table
-cleaver samtools mpileup -f genome.fa aln.sorted.bam
-cleaver samtools coverage aln.sorted.bam
+cleaver-x samtools mpileup -f genome.fa aln.sorted.bam
+cleaver-x samtools coverage aln.sorted.bam
 ```
 
 **Caveats.** `sort`/`merge` build the record set in memory (no external
@@ -688,7 +721,7 @@ BCF/VCF genotype-likelihood mode (only the text pileup is produced),
 `markdup`/`rmdup`/`fixmate`, `calmd`, `reheader`, `collate`, `stats`, `consensus`,
 `ampliconstats`, `tview`, and CRAM I/O.
 
-## `cleaver version` · `cleaver doctor` · `cleaver info`
+## `cleaver version` · `cleaver-x doctor` · `cleaver-x info`
 `version` prints the banner, version, backend, and GPU-kernel status. `doctor`
 runs the built-in self-test (splitting, conversion, partition, base composition,
 genome N50, counting, **fastp QC**, **barcode demux**, **samtools
@@ -700,15 +733,16 @@ backend, GPUs, and the supported formats/commands.
 
 # 📦 Output Files
 
-Cleaver writes plain, tool-compatible files — every chunk and index is valid on
+Cleaver-X writes plain, tool-compatible files — every chunk and index is valid on
 its own and can be handed straight to downstream software.
 
 ```text
 split output
 ├── genome.00000.fna          Record-aware chunks; original extension kept
 ├── genome.00001.fna          FASTA/FASTQ split by size (-c 1G, 256M, 50Mi)
-└── aln.00000.bam             SAM/BAM split by record count (-r), full header
-                              replicated + finalised BGZF EOF block
+└── aln.00000.bam             SAM/BAM split by record count (-r) AND/OR size
+                              (-c); full header replicated + finalised BGZF
+                              EOF block, so every chunk is a valid BAM
 
 stats output
 ├── Per-file and TOTAL rows   Sequences, total bp, min/max/mean/median length
@@ -775,7 +809,7 @@ Work is **one task per file**. The default build runs tasks on a work-stealing
 pool ([`rayon`](https://github.com/rayon-rs/rayon)); `-t 0` uses all logical
 cores. Built `--features hydra`, the *same* task functions run on a **HydraMPP**
 cluster instead — multi-core on one box, or across nodes, with no other code
-change. The `cleaver` engine library runs unchanged on whichever worker receives a
+change. The Cleaver-X engine library runs unchanged on whichever worker receives a
 file.
 
 HydraMPP is an **optional crates.io dependency** (`hydra-mpp`, off by default),
@@ -810,7 +844,7 @@ genuinely data-parallel — so it has a real GPU path:
   suite exercises, and `stats` falls back to it automatically when no device is
   present.
 
-`cleaver info` reports the active scaling backend, whether the GPU kernel was
+`cleaver-x info` reports the active scaling backend, whether the GPU kernel was
 compiled in, and any NVIDIA GPUs detected via `nvidia-smi` (no build dependency).
 
 ---
@@ -862,9 +896,91 @@ for them.
 
 ---
 
+# 🐞 Bug audit ("find any bugs")
+
+Every item below was found by auditing, stress-testing, or **differential
+testing against the reference C implementations**, and every one is fixed:
+
+**Reported blockers (C1–C6)**
+
+- [x] **C1** invalid `edition = "2026"` — ships `edition = "2021"`; there is no
+      workspace left to inherit a bad value from (single crate)
+- [x] **C2** stale lockfile — version bumped to `1.0.1` and `Cargo.lock`
+      regenerated; `cargo build --locked` verified from a clean extract
+- [x] **C3** GPU build panicked (no cudarc CUDA version selected) — the `gpu`
+      feature now also enables `cudarc/cuda-version-from-build-system`, which
+      reads `nvcc`. Explicit pins still win, so `--features gpu,cudarc/cuda-12040`
+      overrides it
+- [x] **C4** CUDA/toolchain limits — README corrected: cudarc 0.12.1 is edition
+      2021 with no `rust-version`, so the old "GPU needs rustc ≥ 1.85" claim was
+      wrong and no 1.85 directory override should be needed. cudarc 0.12's CUDA
+      ≤ 12.6 ceiling is real and is now documented
+- [x] **C5** `install.sh` hid failures and edited `~/.bashrc` — it now runs
+      `version` **and** `doctor` and exits non-zero on failure, and prints the
+      PATH line instead of appending it (opt in with `CLEAVER_EDIT_RC=1`)
+- [ ] **BAQ not implemented** in `mpileup` — output matches `samtools mpileup -B`,
+      not samtools' default. Now flagged at runtime and documented; implementing
+      htslib's banded HMM realignment is the remaining work
+- [ ] **C6** `v1.0.1` tag oddity — not reproducible from the source tree; no git
+      history ships in the tarball. Re-tag after applying these fixes
+
+**Found by differential testing vs samtools 1.19.2 / featureCounts 2.0.6 / fastp 0.23.4**
+
+- [x] `fastp` adapter rule was too permissive — cleaver allowed
+      `floor(overlap × 0.2)` mismatches from a 4 bp overlap; fastp allows exactly
+      `cmplen / 8` and stops the scan 4 bp from the end. Over-trimmed 27/1461
+      reads by 4–6 bp. Now byte-identical
+- [x] `samtools flagstat` printed `N/A%` where samtools prints a bare `N/A`
+- [x] `samtools depth` used the wrong default filter (`0x904`); samtools uses
+      **`0x704`** — supplementary reads are kept, QC-fail/duplicate are dropped
+- [x] `samtools depth` omitted depth-0 rows for positions spanned by `D`/`N` gaps
+- [x] `samtools sort` tie-break — samtools orders equal `(ref,pos)` by
+      forward-before-reverse strand, then QNAME; cleaver relied on input order
+- [x] `samtools mpileup` used the wrong default filter and `--min-BQ 0`;
+      samtools defaults to `0x704` and **`-Q 13`**
+- [x] `samtools mpileup` never emitted `>`/`<` reference-skip markers (they count
+      toward depth and carry the junction base quality)
+- [x] `samtools mpileup` printed deleted reference bases always uppercase;
+      samtools cases them by read strand
+- [x] `samtools mpileup` gave the `*` deletion placeholder quality `!`;
+      samtools uses the junction base quality
+- [x] `samtools coverage` printed fixed-precision floats; samtools uses C `%g`
+      (6 significant digits) and `%.3g` for the quality columns
+- [x] `cleaver count` treated **supplementary** alignments as multi-mapping and
+      forced `--primary` on; featureCounts counts supplementary reads, excludes
+      secondary only with `--primary` (now a real `--primary` flag, off by default)
+
+**Found by earlier auditing / stress-testing**
+
+- [x] Duplicate `noodles-sam` in the dependency tree (trait mismatch)
+- [x] `mpileup` `$` end-marker landed on the wrong column when a base was filtered
+- [x] Region coordinates failed silently (`chr1:foo-bar` scanned the whole chromosome)
+- [x] `faidx` region coordinates had the same silent-parse flaw (+ `linebases == 0` guard)
+- [x] `fastp` silently truncated mismatched paired-end input
+- [x] Wrong unit-test expectation in the base counter (test was miscounted, kernel was right)
+- [x] `sort` did not rewrite the `@HD SO:` tag (now `coordinate` / `queryname`)
+- [x] Two `unwrap()` sites in `demux` reachable only by argument → now safe by construction
+- [x] `cargo publish` blocked: path deps without `version`, workspace-inherited
+      `[package]` fields, and a vendored copy of an already-published crate
+- [x] Workspace split into `cleaver-core` + `cleaver-cli` → merged into one `cleaver` crate
+- [x] Vendored `hydra-mpp-core` / `rustyomestats` copies → replaced with the published crates
+- [x] `install.sh` still passed `-p cleaver-cli` after the merge
+- [x] **`split` silently overwrote same-stem inputs** — `x.ffn` and `x.ffn.gz`
+      both write `x.00000.ffn`, so one input's chunks clobbered the other's
+      while cleaver reported "2 file(s) -> 2 chunk(s)" and exited 0. Collisions
+      are now detected before any file is written and reported as an error
+      (`cleaver_x::find_stem_collision`); regression test added
+- [x] `unsafe` was only *conventionally* confined to the GPU launch — the binary
+      now carries `#![deny(unsafe_code)]` with one scoped `#[allow]`, so new
+      `unsafe` anywhere in it fails the build (verified by injection)
+- [x] README documented `--contains` / a `--delimiter` flag that the CLI does
+      not have — those are library-only (`Match::Contains`, `Mode::Delimiter`)
+
+---
+
 # 🔬 Differential validation vs the reference tools
 
-Cleaver's re-implementations were run head-to-head against the real C tools on
+Cleaver-X's re-implementations were run head-to-head against the real C tools on
 **identical inputs with matched parameters**, and the outputs compared byte for
 byte. Tools: `samtools 1.19.2`, `featureCounts 2.0.6` (subread), `fastp 0.23.4`.
 
@@ -877,10 +993,75 @@ byte. Tools: `samtools 1.19.2`, `featureCounts 2.0.6` (subread), `fastp 0.23.4`.
 Per-position depth (7,883 positions), mpileup depth, and per-gene counts all
 give Pearson **r = 1.000000** with 100% exact agreement.
 
-**Honest caveat:** `mpileup` is compared with BAQ disabled (`samtools mpileup -B`).
-Cleaver does not implement BAQ (base alignment quality) realignment, which
-samtools applies by default and which changes base qualities near indels. All
-other comparisons use each tool's own defaults.
+**Honest caveat — BAQ is a real gap, not a formatting detail.** `mpileup` is
+compared with BAQ disabled (`samtools mpileup -B`). Cleaver does not implement
+BAQ (base alignment quality) realignment, which samtools applies by default.
+This is not cosmetic: on the validation BAM, turning BAQ on changes **96% of
+pileup rows** (only 3.8% of rows have identical depth and base strings between
+`samtools mpileup` and `samtools mpileup -B`), because BAQ lowers base qualities
+and the default `-Q 13` filter then drops those bases, shifting the depth too.
+
+So `cleaver-x samtools mpileup` is equivalent to `samtools mpileup -B`, **not** to
+bare `samtools mpileup`. Cleaver-X accepts `-B`/`--no-BAQ` for CLI compatibility
+and prints a one-line note when you supply a reference without `-B`, so this can
+never bite silently. All other comparisons use each tool's own defaults.
+
+Detail on the earlier items:
+
+
+1. **Duplicate `noodles-sam` in the dependency tree** — pinning `noodles-sam 0.50`
+   while `noodles-bam 0.55` requires `0.52` put *two* copies of the crate in the
+   graph, so `alignment::io::Write` and `RecordBuf: Record` came from different
+   crates and didn't match (`finish`/`write_alignment_record` "not satisfied").
+   Fixed by aligning to `0.52`.
+2. **Silent MSRV walls** — `indexmap 2.14` and `rayon-core 1.13` require
+   edition2024 / rustc ≥ 1.80. Pinned to `2.2.6` and `1.12.1`.
+3. **Wrong unit-test expectation in the base counter** — the FASTA `stats` test
+   asserted `C:4 / total:15 / GC:7÷13` for input `ACGT|AACC|GGTTNN`, which
+   actually has `C:3 / total:14 / GC:0.5`; the kernel was right, the test was
+   miscounted. Corrected the expectation (caught by running the suite, not by
+   eye).
+4. **Region coordinates failed silently** — the `samtools` region parser used
+   `parse().unwrap_or(...)`, so a typo like `chr1:foo-bar` fell back to *the whole
+   chromosome* instead of erroring, and `chr1:200-100` (start > end) was accepted.
+   Both the alignment parser (`view`/`mpileup`/`coverage`/`depth`) and the FASTA
+   `faidx` parser now reject non-numeric coordinates and reversed ranges with a
+   clear message; the FASTA path also guards a `linebases == 0` division. Added a
+   regression test.
+5. **Silent truncation of mismatched paired-end input** — `fastp` PE mode broke
+   out of its read loop as soon as *either* mate file ended, so a truncated R2 (or
+   an over-long R1) would drop reads with no notice. Pairing was always correct
+   (mates are read in lockstep and it stops at the shorter file), but the dropped
+   reads were invisible. It now emits a `warning: read1 and read2 have different
+   numbers of records …` and reports how many pairs were processed. Added a
+   regression test.
+
+Verified correct, no bug: the FASTA engine is byte-identical to the Python
+original; BAM chunks re-read as valid BAM with record counts summing exactly
+(50k and 300k runs); SAM chunks each carry the header. The following edge cases
+were audited and are now pinned by regression tests: `fastp` on empty input,
+length-1 reads, all-N reads, sub-adapter-length reads, and reads fully consumed
+by adapter trimming (all filtered by the default min-length, no panic), plus a
+gzip→gzip round-trip; `demux` on reads shorter than a barcode and on empty reads
+(both route to `unclassified` with no panic); and `count` on a read aligned to a
+reference absent from the annotation (tallied as `no_feature`). As part of this,
+the two provably-safe `unwrap()`s in `demux` were rewritten to be safe *by
+construction* (the best-match is carried as a single bundled `Option`, and the
+per-barcode writer is fetched via the `BTreeMap` `Entry` API), so no panic path
+remains even in principle.
+
+Honest sharp edges: memory scales with the longest *line*, not the file (a
+whole-chromosome FASTA on one line is held in memory). In the **library** API,
+a `Mode::Delimiter` whose delimiter never matches yields one giant chunk
+(mitigated by the `Match::StartsWith` default), and `Match::Contains` is an
+O(n·m) scan — neither is reachable from the CLI, which always uses the correct
+per-format delimiter.
+
+Two inputs sharing a chunk stem (e.g. `x.ffn` and `x.ffn.gz`, or the same file
+name from two directories) used to write the same chunk names into one `-o` dir
+and **silently overwrite each other** — cleaver reported success while one
+input's data was lost. `split` now detects this before writing anything and
+exits with an error naming both inputs; use separate `-o` directories.
 
 ---
 
@@ -895,9 +1076,9 @@ cargo build --release --features rustyomestats  # N50/L50 via the rustyomestats 
 cargo test                       # unit + doctests, all passing
 ```
 
-Cleaver is a **single crate** (`cleaver`) with two targets: the reusable engine
-(`src/lib.rs`) and the `cleaver` binary (`src/main.rs`), so `cargo install cleaver`
-gets you both the CLI and a library you can `use cleaver::…` from.
+Cleaver-X is a **single crate** (`Cleaver-X`) with two targets: the reusable engine
+library `cleaver_x` (`src/lib.rs`) and the `cleaver-x` binary (`src/main.rs`), so `cargo install Cleaver-X`
+gets you both the CLI and a library you can `use cleaver_x::…` from.
 
 MSRV is held at **1.75** by pinning `noodles-sam=0.52`, `noodles-bam=0.55`,
 `noodles-bgzf=0.26`, `indexmap=2.2.6`, `rayon=1.10`, `rayon-core=1.12.1`. A fully
@@ -912,17 +1093,36 @@ by itself require a newer rustc than the rest of the crate. The optional
 `rustyomestats` feature is the one exception: that crate needs rustc ≥ 1.88, so it
 is off by default and the equivalent N/L metrics are computed natively instead.
 
+## ✅ Correctness
+
+`#![forbid(unsafe_code)]` on the engine library, and `#![deny(unsafe_code)]` on
+the binary with a single visible `#[allow(unsafe_code)]` at the CUDA kernel
+launch (behind `--features gpu`) — the only `unsafe` in the project. The
+guarantee is enforced by the compiler, not by convention: adding `unsafe`
+anywhere else is a hard build error. Tests cover FASTA/FASTQ losslessness and
+boundary behaviour, SAM header replication, SAM↔BAM round-trips, BAM-chunk
+validity, FASTQ→FASTA, mapped/unmapped filtering and partitioning, base
+composition / GC, **genome stats (N50/L50/N90, lengths, median)**, GTF/GFF
+parsing, CIGAR intron-splitting, and **count assignment** (unique / ambiguous /
+no-feature, strandedness, multimapper and MAPQ filters, and the union / strict /
+nonempty overlap modes). End-to-end (verified here): all FASTA variants, FASTQ,
+gzip, and multi-file parallel split reassemble byte-identical; `--partition`
+routes every record by its `0x4` flag (6 mapped + 4 unmapped, lossless); `stats`
+emits the genome table across files; and `count` produces an identical
+gene × sample matrix and `.summary` whether run on the in-node pool or across the
+HydraMPP backend with devices pinned per task.
+
 ---
 
 # 📚 Library Usage
 
-Cleaver is a **single crate with two targets** — the `cleaver` binary and a
-reusable engine library — so `cargo install cleaver` gets you the CLI, and
-`cleaver = "1.0"` in `Cargo.toml` gets you the same engine in your own code.
+Cleaver is a **single crate with two targets** — the `cleaver-x` binary and a
+reusable engine library — so `cargo install Cleaver-X` gets you the CLI, and
+`Cleaver-X = "1.0"` in `Cargo.toml` gets you the same engine in your own code.
 
 ```rust
 use anyhow::Result;
-use cleaver::{genome, parse_size, samtools, Format};
+use cleaver_x::{genome, parse_size, samtools, Format};
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -958,7 +1158,7 @@ Public modules: `align`, `annotation`, `compute`, `count`, `demux`, `fastp`,
 
 ```bash
 cargo test                  # unit + integration suite
-cleaver doctor              # end-to-end self-test of every code path
+cleaver-x doctor              # end-to-end self-test of every code path
 ```
 
 Covers:
@@ -1070,7 +1270,7 @@ Pull requests and issues are encouraged.
 # 📞 Support
 
 * 🐛 GitHub Issues:
-  - **Issues:** [Cleaver Issues](https://github.com/raw-lab/cleaver/issues)
+  - **Issues:** [Cleaver-X Issues](https://github.com/raw-lab/cleaver-x/issues)
 
 * 📧 Contact:
   - **Email:** [Dr. Richard Allen White III](mailto:rwhit101@uncc.edu)
@@ -1080,11 +1280,10 @@ Pull requests and issues are encouraged.
 
 <div align="center">
 
-# ✂️ Cleaver
+# ✂️ Cleaver-X
 
 ### *Streaming. Record-aware. Pure Rust.*
 
 Built with ❤️ in Rust.
 
 </div>
-

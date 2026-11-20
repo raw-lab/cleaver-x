@@ -8,7 +8,7 @@
 //! genuinely data-parallel — so `stats` offloads it to the GPU when the `gpu`
 //! feature is built and a device is available, and falls back to the CPU
 //! reference otherwise. Both paths fold the *same* per-byte histogram into
-//! A/C/G/T/N/other (see `cleaver::compute`), so results are identical.
+//! A/C/G/T/N/other (see `cleaver_x::compute`), so results are identical.
 //!
 //! The CUDA kernel uses `cudarc` 0.12, whose build needs the CUDA toolkit and
 //! rustc >= 1.85, so it is OFF by default and compiled on GPU hosts with
@@ -18,8 +18,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use cleaver::compute::{self, Counts};
-use cleaver::Format;
+use cleaver_x::compute::{self, Counts};
+use cleaver_x::Format;
 
 pub struct Gpu {
     pub name: String,
@@ -117,6 +117,9 @@ extern "C" __global__ void hist_bytes(const unsigned char *data,
             block_dim: (threads, 1, 1),
             shared_mem_bytes: 0,
         };
+        // The one and only `unsafe` in cleaver: launching a CUDA kernel cannot
+        // be checked by the compiler. Guarded by `--features gpu`.
+        #[allow(unsafe_code)]
         unsafe {
             func.clone().launch(cfg, (&d_in, n, &mut *d_hist)).context("kernel launch")?;
         }
@@ -124,7 +127,7 @@ extern "C" __global__ void hist_bytes(const unsigned char *data,
         Ok(())
     }
 
-    let (mut reader, _gz) = cleaver::open_reader(path)?;
+    let (mut reader, _gz) = cleaver_x::open_reader(path)?;
     let mut line: Vec<u8> = Vec::with_capacity(256);
     let mut batch: Vec<u8> = Vec::with_capacity(BATCH);
     let mut lineno: u64 = 0;

@@ -7,6 +7,8 @@
 use std::fs::{self, File};
 use std::io::{BufRead, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use noodles_bam as bam;
@@ -45,10 +47,39 @@ fn stem(path: &Path) -> String {
 // SAM split (text; header replicated)
 // ---------------------------------------------------------------------------
 
+/// Wraps a sink and counts the bytes actually written to it. For BAM that is
+/// the *compressed* on-disk size, which is what `--chunk-size` means to a user
+/// looking at the resulting files.
+struct CountingWriter<W: Write> {
+    inner: W,
+    count: Arc<AtomicU64>,
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.count.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Split one alignment file into chunks bounded by BOTH limits: a new chunk is
+/// started when the current one reaches `records_per_chunk` records **or**
+/// `max_bytes` bytes, whichever comes first. `max_bytes == 0` disables the size
+/// limit. Sizes are approximate (checked at record boundaries, and for BAM the
+/// counter trails the open BGZF block), exactly as the original chunker was.
 /// Split a SAM file into chunks of at most `records_per_chunk` records. The
 /// `@`-prefixed header block heads every chunk, so each is a valid SAM. gzip
 /// input is transparent.
-pub fn split_sam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Vec<PathBuf>> {
+pub fn split_sam(
+    input: &Path,
+    dest: &Path,
+    records_per_chunk: u64,
+    max_bytes: u64,
+) -> Result<Vec<PathBuf>> {
     if records_per_chunk == 0 {
         bail!("--records must be >= 1");
     }
@@ -62,8 +93,9 @@ pub fn split_sam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
     let mut header_done = false;
     let mut chunks: Vec<PathBuf> = Vec::new();
     let mut idx = 0u64;
-    let mut writer: Option<BufWriter<File>> = None;
+    let mut writer: Option<BufWriter<CountingWriter<File>>> = None;
     let mut in_chunk = 0u64;
+    let counter = Arc::new(AtomicU64::new(0));
     let mut line: Vec<u8> = Vec::with_capacity(256);
 
     loop {
@@ -77,14 +109,18 @@ pub fn split_sam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
             continue;
         }
         header_done = true;
-        if writer.is_none() || in_chunk >= records_per_chunk {
+        let size_hit = max_bytes > 0 && counter.load(Ordering::Relaxed) >= max_bytes;
+        if writer.is_none() || in_chunk >= records_per_chunk || size_hit {
             if let Some(mut w) = writer.take() {
                 w.flush().context("flushing SAM chunk")?;
             }
             let p = path_for(idx);
-            let mut w = BufWriter::new(
-                File::create(&p).with_context(|| format!("creating chunk '{}'", p.display()))?,
-            );
+            counter.store(0, Ordering::Relaxed);
+            let mut w = BufWriter::new(CountingWriter {
+                inner: File::create(&p)
+                    .with_context(|| format!("creating chunk '{}'", p.display()))?,
+                count: Arc::clone(&counter),
+            });
             w.write_all(&header).context("writing SAM header")?;
             chunks.push(p);
             writer = Some(w);
@@ -94,6 +130,10 @@ pub fn split_sam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
         if let Some(w) = writer.as_mut() {
             w.write_all(&line).context("writing SAM record")?;
             in_chunk += 1;
+            // keep the on-disk counter current enough to honour --chunk-size
+            if max_bytes > 0 {
+                w.flush().context("flushing SAM chunk")?;
+            }
         }
     }
 
@@ -101,7 +141,10 @@ pub fn split_sam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
         w.flush().context("flushing final SAM chunk")?;
     } else {
         let p = path_for(0);
-        let mut w = BufWriter::new(File::create(&p)?);
+        let mut w = BufWriter::new(CountingWriter {
+            inner: File::create(&p)?,
+            count: Arc::clone(&counter),
+        });
         w.write_all(&header)?;
         w.flush()?;
         chunks.push(p);
@@ -115,7 +158,12 @@ pub fn split_sam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
 
 /// Split a BAM into chunks of at most `records_per_chunk` records. Every chunk
 /// carries the header and a finalised BGZF EOF block, so each is a valid BAM.
-pub fn split_bam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Vec<PathBuf>> {
+pub fn split_bam(
+    input: &Path,
+    dest: &Path,
+    records_per_chunk: u64,
+    max_bytes: u64,
+) -> Result<Vec<PathBuf>> {
     if records_per_chunk == 0 {
         bail!("--records must be >= 1");
     }
@@ -128,10 +176,14 @@ pub fn split_bam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
     let name = stem(input);
     let path_for = |i: u64| dest.join(format!("{name}.{i:05}.bam"));
 
-    let make = |path: &PathBuf| -> Result<bam::io::Writer<bgzf::Writer<File>>> {
-        let mut writer = bam::io::Writer::new(
-            File::create(path).with_context(|| format!("creating chunk '{}'", path.display()))?,
-        );
+    let counter = Arc::new(AtomicU64::new(0));
+    let make = |path: &PathBuf| -> Result<bam::io::Writer<bgzf::Writer<CountingWriter<File>>>> {
+        counter.store(0, Ordering::Relaxed);
+        let mut writer = bam::io::Writer::new(CountingWriter {
+            inner: File::create(path)
+                .with_context(|| format!("creating chunk '{}'", path.display()))?,
+            count: Arc::clone(&counter),
+        });
         writer.write_header(&header).context("writing BAM header")?;
         Ok(writer)
     };
@@ -145,7 +197,8 @@ pub fn split_bam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
 
     for result in reader.records() {
         let record = result.context("reading BAM record")?;
-        if in_chunk >= records_per_chunk {
+        let size_hit = max_bytes > 0 && counter.load(Ordering::Relaxed) >= max_bytes;
+        if in_chunk >= records_per_chunk || size_hit {
             writer.finish(&header).context("finalising BAM chunk")?;
             idx += 1;
             path = path_for(idx);
@@ -161,10 +214,16 @@ pub fn split_bam(input: &Path, dest: &Path, records_per_chunk: u64) -> Result<Ve
 }
 
 /// Alignment split entry point.
-pub fn split_alignment(input: &Path, dest: &Path, records_per_chunk: u64, fmt: Format) -> Result<Vec<PathBuf>> {
+pub fn split_alignment(
+    input: &Path,
+    dest: &Path,
+    records_per_chunk: u64,
+    max_bytes: u64,
+    fmt: Format,
+) -> Result<Vec<PathBuf>> {
     match fmt {
-        Format::Sam => split_sam(input, dest, records_per_chunk),
-        Format::Bam => split_bam(input, dest, records_per_chunk),
+        Format::Sam => split_sam(input, dest, records_per_chunk, max_bytes),
+        Format::Bam => split_bam(input, dest, records_per_chunk, max_bytes),
         _ => bail!("split_alignment called on a non-alignment format"),
     }
 }
@@ -369,7 +428,7 @@ r4\t0\tref\t13\t60\t4M\t*\t0\t0\tCCCC\tIIII
         let d = tmp("sam");
         let inp = d.join("aln.sam");
         File::create(&inp).unwrap().write_all(SAM.as_bytes()).unwrap();
-        let chunks = split_sam(&inp, &d.join("out"), 2).unwrap();
+        let chunks = split_sam(&inp, &d.join("out"), 2, 0).unwrap();
         assert!(chunks.len() >= 2);
         let mut total = 0;
         for c in &chunks {
@@ -417,7 +476,7 @@ r4\t0\tref\t13\t60\t4M\t*\t0\t0\tCCCC\tIIII
         File::create(&s).unwrap().write_all(SAM.as_bytes()).unwrap();
         let bam = d.join("all.bam");
         convert_alignment(&s, &bam, MapFilter::All).unwrap();
-        let chunks = split_bam(&bam, &d.join("out"), 2).unwrap();
+        let chunks = split_bam(&bam, &d.join("out"), 2, 0).unwrap();
         assert!(chunks.len() >= 2);
         let mut total = 0u64;
         for c in &chunks {
@@ -435,5 +494,61 @@ r4\t0\tref\t13\t60\t4M\t*\t0\t0\tCCCC\tIIII
         let fa = d.join("reads.fasta");
         assert_eq!(fastq_to_fasta(&fq, &fa).unwrap(), 2);
         assert_eq!(fs::read_to_string(&fa).unwrap(), ">r1\nACGT\n>r2\nTTTT\n");
+    }
+
+    #[test]
+    fn alignment_split_honours_chunk_size() {
+        // --chunk-size must work on alignment formats too, not just FASTA/FASTQ:
+        // a new chunk starts when EITHER the record cap or the byte cap is hit.
+        let d = tmp("chunksize");
+        let sam = d.join("big.sam");
+        let mut body = String::from("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:100000\n");
+        for i in 0..2000 {
+            body.push_str(&format!(
+                "rd{i:06}\t0\tchr1\t{}\t60\t20M\t*\t0\t0\tACGTACGTACGTACGTACGT\t{}\n",
+                (i % 9000) + 1,
+                "I".repeat(20)
+            ));
+        }
+        std::fs::write(&sam, &body).unwrap();
+
+        // records cap alone (byte cap disabled)
+        let a = split_sam(&sam, &d.join("by_rec"), 500, 0).unwrap();
+        assert_eq!(a.len(), 4, "2000 records / 500 = 4 chunks");
+
+        // byte cap alone: a huge record cap must not prevent size-based splitting
+        let b = split_sam(&sam, &d.join("by_size"), u64::MAX, 20_000).unwrap();
+        assert!(b.len() > 1, "chunk-size must split SAM, got {} chunk(s)", b.len());
+        // every chunk carries the header and no records are lost
+        let mut total = 0usize;
+        for p in &b {
+            let t = std::fs::read_to_string(p).unwrap();
+            assert!(t.starts_with("@HD"), "chunk missing header: {}", p.display());
+            total += t.lines().filter(|l| !l.starts_with('@')).count();
+        }
+        assert_eq!(total, 2000, "records must be preserved across size-split chunks");
+
+        // the same for BAM, and each chunk must re-read as valid BAM
+        let bam = d.join("big.bam");
+        convert_alignment(&sam, &bam, MapFilter::All).unwrap();
+        // size the cap against the ACTUAL compressed file: BAM is BGZF, so the
+        // byte counter advances a block at a time and a cap larger than the
+        // whole file can never split it.
+        let bam_bytes = std::fs::metadata(&bam).unwrap().len();
+        let cap = (bam_bytes / 3).max(1);
+        let c = split_bam(&bam, &d.join("bam_size"), u64::MAX, cap).unwrap();
+        assert!(c.len() > 1, "chunk-size must split BAM, got {} chunk(s)", c.len());
+        let mut n = 0u64;
+        for p in &c {
+            let f = File::open(p).unwrap();
+            let mut r = bam::io::Reader::new(f);
+            let h = r.read_header().unwrap();
+            for rec in r.records() {
+                rec.unwrap();
+                n += 1;
+            }
+            let _ = h;
+        }
+        assert_eq!(n, 2000, "BAM records must be preserved across size-split chunks");
     }
 }

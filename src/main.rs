@@ -6,6 +6,13 @@
 //! HydraMPP cluster (multi-core or cross-node), with `stats` offloaded to a GPU
 //! when one is scheduled.
 
+// The engine library is `#![forbid(unsafe_code)]`. The binary needs exactly one
+// `unsafe` — the CUDA kernel launch, which is inherently unsafe in cudarc — so
+// it is denied here and explicitly re-allowed at that single call site. Any new
+// `unsafe` anywhere in the binary is a hard error unless someone adds a visible
+// `#[allow(unsafe_code)]` next to it.
+#![deny(unsafe_code)]
+
 mod doctor;
 mod gpu;
 mod jobs;
@@ -17,17 +24,17 @@ mod parallel;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
-use cleaver::{align, compute::Counts, parse_size, Format};
+use cleaver_x::{align, compute::Counts, parse_size, Format};
 
 const BANNER: &str = r"
-   ___ _
-  / __\ | ___  __ ___   _____ _ __
- / /  | |/ _ \/ _` \ \ / / _ \ '__|
-/ /___| |  __/ (_| |\ V /  __/ |
-\____/|_|\___|\__,_| \_/ \___|_|   record-aware FASTA/FASTQ/SAM/BAM
+  ____ _                              __  __
+ / ___| | ___  __ ___   _____ _ __    \ \/ /
+| |   | |/ _ \/ _` \ \ / / _ \ '__|____\  /
+| |___| |  __/ (_| |\ V /  __/ | |_____/  \
+ \____|_|\___|\__,_| \_/ \___|_|      /_/\_\  record-aware FASTA/FASTQ/SAM/BAM
 ";
 
 /// Cluster controls for the HydraMPP backend (only present with `--features hydra`).
@@ -53,7 +60,7 @@ struct Cluster {
 
 #[derive(Parser)]
 #[command(
-    name = "cleaver",
+    name = "cleaver-x",
     version,
     about = "Split, convert, profile & count FASTA/FASTQ/SAM/BAM without cutting records.",
     before_help = BANNER,
@@ -605,6 +612,11 @@ enum SamCmd {
         /// Skip bases below this base quality.
         #[arg(short = 'Q', long = "min-BQ", default_value_t = 13)]
         min_baseq: u8,
+        /// Disable BAQ (per-base alignment quality). Accepted for samtools CLI
+        /// compatibility: cleaver never applies BAQ, so its output always
+        /// matches `samtools mpileup -B`.
+        #[arg(short = 'B', long = "no-BAQ")]
+        no_baq: bool,
         /// Region filter: `chr` or `chr:beg-end`.
         #[arg(short = 'r', long)]
         region: Option<String>,
@@ -627,6 +639,11 @@ enum SamCmd {
         /// Skip bases below this base quality.
         #[arg(short = 'Q', long = "min-BQ", default_value_t = 13)]
         min_baseq: u8,
+        /// Disable BAQ (per-base alignment quality). Accepted for samtools CLI
+        /// compatibility: cleaver never applies BAQ, so its output always
+        /// matches `samtools mpileup -B`.
+        #[arg(short = 'B', long = "no-BAQ")]
+        no_baq: bool,
         /// Region filter: `chr` or `chr:beg-end`.
         #[arg(short = 'r', long)]
         region: Option<String>,
@@ -706,6 +723,23 @@ fn main() -> Result<()> {
         Cmd::Split { inputs, outdir, chunk_size, records, threads, format } => {
             let chunk_size = parse_size(&chunk_size)
                 .with_context(|| format!("invalid --chunk-size '{chunk_size}'"))?;
+            // Chunk names are derived from the input's stem (minus any .gz), so
+            // two inputs that share a stem — `x.ffn` and `x.ffn.gz`, or the same
+            // name from two directories — would write the SAME chunk files into
+            // one -o dir and silently overwrite each other. Refuse up front
+            // rather than destroying data and reporting success.
+            if let Some((a, b, stem)) = cleaver_x::find_stem_collision(&inputs) {
+                bail!(
+                    "'{}' and '{}' share the chunk stem '{}', so both would write \
+                     '{}.00000.*' into '{}' and overwrite each other.\n       \
+                     Split them into separate -o directories (or rename one input).",
+                    inputs[a].display(),
+                    inputs[b].display(),
+                    stem,
+                    stem,
+                    outdir.display()
+                );
+            }
             std::fs::create_dir_all(&outdir)
                 .with_context(|| format!("creating output dir '{}'", outdir.display()))?;
             let forced = format.map(|f| jobs::fmt_name(Format::from(f)).to_string());
@@ -899,7 +933,7 @@ fn main() -> Result<()> {
                 Some(p) => read_fasta_seqs(p)?,
                 None => Vec::new(),
             };
-            let params = cleaver::fastp::FastpParams {
+            let params = cleaver_x::fastp::FastpParams {
                 disable_adapter: disable_adapter_trimming,
                 adapter_r1: adapter_sequence.map(|s| s.into_bytes()),
                 adapter_r2: adapter_sequence_r2.map(|s| s.into_bytes()),
@@ -917,16 +951,16 @@ fn main() -> Result<()> {
                 phred64, reads_to_process,
             };
             let report = match (&in2, &out2) {
-                (Some(i2), Some(o2)) => cleaver::fastp::run_pe(&in1, &out1, i2, o2, &params)?,
-                (None, None) => cleaver::fastp::run_se(&in1, &out1, &params)?,
+                (Some(i2), Some(o2)) => cleaver_x::fastp::run_pe(&in1, &out1, i2, o2, &params)?,
+                (None, None) => cleaver_x::fastp::run_se(&in1, &out1, &params)?,
                 _ => anyhow::bail!("paired-end requires both --in2 and --out2"),
             };
             finish_fastp(report, &json)
         }
 
         Cmd::Demux { input, output, queries, window, min_score, min_score_diff, max_errors, no_trim, one_end } => {
-            let barcodes = cleaver::demux::read_barcodes(&queries)?;
-            let params = cleaver::demux::DemuxParams {
+            let barcodes = cleaver_x::demux::read_barcodes(&queries)?;
+            let params = cleaver_x::demux::DemuxParams {
                 window,
                 min_score,
                 min_score_diff,
@@ -934,7 +968,7 @@ fn main() -> Result<()> {
                 trim: !no_trim,
                 both_ends: !one_end,
             };
-            let stats = cleaver::demux::demux_file(&input, &output, &barcodes, &params)?;
+            let stats = cleaver_x::demux::demux_file(&input, &output, &barcodes, &params)?;
             let rate = if stats.total > 0 { stats.classified as f64 / stats.total as f64 * 100.0 } else { 0.0 };
             println!("  {} barcode(s) scanned over {} reads", barcodes.len(), stats.total);
             println!("  classified  : {:>10} ({:>5.1}%)", stats.classified, rate);
@@ -971,12 +1005,12 @@ fn fmt_is_bam(fmt: &str) -> Result<bool> {
 }
 
 fn run_samtools(cmd: SamCmd) -> Result<()> {
-    use cleaver::samtools as st;
+    use cleaver_x::samtools as st;
     match cmd {
         SamCmd::View {
             input, output, bam, count, header_only, require, exclude, min_mapq, region, subsample,
         } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             let (frac, seed) = match subsample {
                 Some(s) => (Some(s.fract().max(0.0)), s.floor().max(0.0) as u64),
                 None => (None, 0),
@@ -999,7 +1033,7 @@ fn run_samtools(cmd: SamCmd) -> Result<()> {
             Ok(())
         }
         SamCmd::Sort { input, output, by_name, format, threads: _ } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             let bam = fmt_is_bam(&format)?;
             let n = st::sort(&input, in_fmt, output.as_deref(), by_name, bam)?;
             eprintln!("sorted {n} record(s)");
@@ -1011,7 +1045,7 @@ fn run_samtools(cmd: SamCmd) -> Result<()> {
             Ok(())
         }
         SamCmd::Fastq { input, output, require, exclude, min_mapq, out1, out2, singleton, out0, no_suffix } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             let p = st::FastxParams {
                 filter: st::Filter { require, exclude, min_mapq },
                 fasta: false,
@@ -1030,7 +1064,7 @@ fn run_samtools(cmd: SamCmd) -> Result<()> {
             Ok(())
         }
         SamCmd::Fasta { input, output, require, exclude, min_mapq, out1, out2, singleton, out0, no_suffix } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             let p = st::FastxParams {
                 filter: st::Filter { require, exclude, min_mapq },
                 fasta: true,
@@ -1046,13 +1080,13 @@ fn run_samtools(cmd: SamCmd) -> Result<()> {
             Ok(())
         }
         SamCmd::Flagstat { input } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             let fs = st::flagstat(&input, in_fmt)?;
             print!("{}", fs.report());
             Ok(())
         }
         SamCmd::Idxstats { input } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             for (name, len, mapped, unmapped) in st::idxstats(&input, in_fmt)? {
                 println!("{name}\t{len}\t{mapped}\t{unmapped}");
             }
@@ -1069,25 +1103,43 @@ fn run_samtools(cmd: SamCmd) -> Result<()> {
             Ok(())
         }
         SamCmd::Depth { input, output, min_mapq, region } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             let p = st::DepthParams { min_mapq, region, output };
             st::depth(&input, in_fmt, &p)?;
             Ok(())
         }
-        SamCmd::Mpileup { input, output, reference, min_mapq, min_baseq, region } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+        SamCmd::Mpileup { input, output, reference, min_mapq, min_baseq, no_baq, region } => {
+            let in_fmt = cleaver_x::formats::detect(&input)?;
+            // Be explicit rather than silently differing from samtools: with a
+            // reference and no -B, samtools would apply BAQ, which changes most
+            // pileup rows. Cleaver does not implement BAQ.
+            if reference.is_some() && !no_baq {
+                eprintln!(
+                    "note: cleaver does not implement BAQ realignment; this output matches \
+                     `samtools mpileup -B` (pass -B to silence this note)"
+                );
+            }
             let p = st::MpileupParams { min_mapq, min_baseq, region, reference, output };
             st::mpileup(&input, in_fmt, &p)?;
             Ok(())
         }
-        SamCmd::Pileup { input, output, reference, min_mapq, min_baseq, region } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+        SamCmd::Pileup { input, output, reference, min_mapq, min_baseq, no_baq, region } => {
+            let in_fmt = cleaver_x::formats::detect(&input)?;
+            // Be explicit rather than silently differing from samtools: with a
+            // reference and no -B, samtools would apply BAQ, which changes most
+            // pileup rows. Cleaver does not implement BAQ.
+            if reference.is_some() && !no_baq {
+                eprintln!(
+                    "note: cleaver does not implement BAQ realignment; this output matches \
+                     `samtools mpileup -B` (pass -B to silence this note)"
+                );
+            }
             let p = st::MpileupParams { min_mapq, min_baseq, region, reference, output };
             st::pileup(&input, in_fmt, &p)?;
             Ok(())
         }
         SamCmd::Coverage { input, output, region } => {
-            let in_fmt = cleaver::formats::detect(&input)?;
+            let in_fmt = cleaver_x::formats::detect(&input)?;
             st::coverage(&input, in_fmt, &st::CoverageParams { region, output })?;
             Ok(())
         }
@@ -1145,7 +1197,7 @@ fn read_fasta_seqs(path: &Path) -> Result<Vec<Vec<u8>>> {
 }
 
 /// Write the fastp JSON report and print a concise stdout summary.
-fn finish_fastp(report: cleaver::fastp::Report, json: &Path) -> Result<()> {
+fn finish_fastp(report: cleaver_x::fastp::Report, json: &Path) -> Result<()> {
     std::fs::write(json, report.to_json())
         .with_context(|| format!("writing JSON report '{}'", json.display()))?;
     let (b, a) = (&report.before, &report.after);
@@ -1413,7 +1465,7 @@ fn report_count_hier(results: &[jobs::HierOutcome], output: &Path, types: &[Stri
 
 fn print_version() {
     print!("{BANNER}");
-    println!("cleaver {}", env!("CARGO_PKG_VERSION"));
+    println!("Cleaver-X {}", env!("CARGO_PKG_VERSION"));
     println!(
         "backend  {}",
         if cfg!(feature = "hydra") { "HydraMPP (multi-core / cross-node)" } else { "rayon (in-node)" }

@@ -1,12 +1,12 @@
 [package]
 name = "Cleaver-X"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 rust-version = "1.75"
 license = "CC-BY-NC-4.0"
 authors = ["RAW Lab <raw.lab@uncc.edu>"]
-repository = "https://github.com/raw-lab/cleaver"
-homepage = "https://github.com/raw-lab/cleaver"
+repository = "https://github.com/raw-lab/cleaver-x"
+homepage = "https://github.com/raw-lab/cleaver-x"
 readme = "README.md"
 description = "Record-aware FASTA/FASTQ/SAM/BAM toolkit: streaming split & convert, fastp-style QC, VERSE-style counting, ONT barcode demux, and a pure-Rust samtools suite."
 keywords = ["bioinformatics", "fasta", "fastq", "bam", "genomics"]
@@ -15,11 +15,13 @@ exclude = ["/bench", "/.github", "/target"]
 
 # One crate, two targets: the reusable engine (lib) and the `cleaver` binary.
 [lib]
-name = "cleaver"
+name = "cleaver_x"
 path = "src/lib.rs"
 
+# The binary is `cleaver-x`. install.sh additionally drops a `cleaver` symlink
+# beside it so existing scripts and muscle memory keep working.
 [[bin]]
-name = "cleaver"
+name = "cleaver-x"
 path = "src/main.rs"
 
 [dependencies]
